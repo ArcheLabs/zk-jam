@@ -21,3 +21,10 @@ blake2b_simd = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
+
+# OpenVM v2.0.1 is pinned to the immutable upstream revision used by M2.
+openvm-sdk = { version = "2.0.1", git = "https://github.com/openvm-org/openvm.git", rev = "b820b25baab6c5d9b055f64e0286b6b1058e707c", default-features = false, features = ["parallel", "jemalloc"] }
+openvm-build = { version = "2.0.1", git = "https://github.com/openvm-org/openvm.git", rev = "b820b25baab6c5d9b055f64e0286b6b1058e707c", default-features = false }
+openvm-stark-backend = { version = "2.0.0", git = "https://github.com/openvm-org/stark-backend.git", tag = "v2.0.0", default-features = false }
+openvm-stark-sdk = { version = "2.0.0", git = "https://github.com/openvm-org/stark-backend.git", tag = "v2.0.0", default-features = false }
+openvm-verify-stark-host = { version = "2.0.1", git = "https://github.com/openvm-org/openvm.git", rev = "b820b25baab6c5d9b055f64e0286b6b1058e707c", default-features = false }

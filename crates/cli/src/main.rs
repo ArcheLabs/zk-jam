@@ -1,4 +1,10 @@
-use std::{env, fs, path::Path, process::ExitCode};
+use std::{
+    env, fs,
+    path::{Path, PathBuf},
+    process::ExitCode,
+};
+use zk_jam_benchmark::{report_run, run_m2};
+use zk_jam_openvm_backend::{M2Benchmark, M2Input, OpenVmBackend};
 use zk_jam_refine_interface::{
     CanonicalCodec, PvmBlockV1, PvmInstructionV1, PvmProgramV1, PvmTerminatorV1, RefineCaseV1,
     RefineStateWitnessV1, RegisterOperandsV1, SmokeProfile, StateWitnessBindingV1,
@@ -8,6 +14,121 @@ use zk_jam_refine_interface::{
 fn usage() {
     eprintln!("usage: zk-jam inspect <case.bin> [--json]");
     eprintln!("       zk-jam make-minimal <case.bin>");
+    eprintln!("       zk-jam openvm info");
+    eprintln!("       zk-jam openvm execute arithmetic|branch|memory");
+    eprintln!("       zk-jam openvm prove arithmetic|branch|memory");
+    eprintln!("       zk-jam openvm verify <artifact.json>");
+    eprintln!("       zk-jam bench m2 --backend cpu [--benchmark arithmetic|branch|memory] [--output benchmarks/results]");
+    eprintln!("       zk-jam bench report <run-id> [--output benchmarks/results]");
+}
+
+fn benchmark(name: &str) -> Result<(M2Benchmark, M2Input), Box<dyn std::error::Error>> {
+    Ok(match name {
+        "arithmetic" => (M2Benchmark::Arithmetic, M2Input::arithmetic(7, 9)),
+        "branch" => (M2Benchmark::Branch, M2Input::branch(21, 8)),
+        "memory" => (
+            M2Benchmark::Memory { bytes: 1024 },
+            M2Input::memory(0x1234_5678, 1024)?,
+        ),
+        other => return Err(format!("unknown OpenVM benchmark: {other}").into()),
+    })
+}
+
+fn openvm_command(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let backend = OpenVmBackend;
+    match args {
+        [command, subcommand] if command == "openvm" && subcommand == "info" => {
+            println!("{}", serde_json::to_string_pretty(&OpenVmBackend::info())?);
+        }
+        [command, action, name]
+            if command == "openvm" && (action == "execute" || action == "prove") =>
+        {
+            let (benchmark, input) = benchmark(name)?;
+            let program = backend.program(benchmark)?;
+            if action == "execute" {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&backend.execute(&program, input)?)?
+                );
+            } else {
+                let artifact = backend.prove(&program, input)?;
+                let path = PathBuf::from(format!("{name}.proof.json"));
+                fs::write(&path, artifact.to_bytes()?)?;
+                println!("proof: {}", path.display());
+                println!(
+                    "verified: {}",
+                    artifact
+                        .verify(&input.context_hash(&artifact.benchmark))
+                        .is_ok()
+                );
+            }
+        }
+        [command, action, path] if command == "openvm" && action == "verify" => {
+            let bytes = fs::read(path)?;
+            let artifact = zk_jam_openvm_backend::OpenVmProofArtifact::from_bytes(&bytes)?;
+            let (_, input) = benchmark(artifact.benchmark.name())?;
+            artifact.verify(&input.context_hash(&artifact.benchmark))?;
+            println!("verified: true");
+        }
+        _ => return Err("invalid openvm command".into()),
+    }
+    Ok(())
+}
+
+fn bench_command(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    if args.get(0).map(String::as_str) != Some("bench") {
+        return Err("invalid bench command".into());
+    }
+    match args.get(1).map(String::as_str) {
+        Some("m2") => {
+            let mut backend = "cpu";
+            let mut benchmark = None;
+            let mut output = PathBuf::from("benchmarks/results");
+            let mut index = 2;
+            while index < args.len() {
+                match args[index].as_str() {
+                    "--backend" => {
+                        backend = args.get(index + 1).ok_or("missing --backend value")?;
+                        index += 2;
+                    }
+                    "--benchmark" => {
+                        benchmark = Some(
+                            args.get(index + 1)
+                                .ok_or("missing --benchmark value")?
+                                .as_str(),
+                        );
+                        index += 2;
+                    }
+                    "--output" => {
+                        output =
+                            PathBuf::from(args.get(index + 1).ok_or("missing --output value")?);
+                        index += 2;
+                    }
+                    other => return Err(format!("unknown bench option: {other}").into()),
+                }
+            }
+            let run = run_m2(&output, benchmark, backend)?;
+            println!(
+                "run_id: {}\nresult_dir: {}",
+                run.run_id,
+                run.result_dir.display()
+            );
+        }
+        Some("report") => {
+            let run_id = args.get(2).ok_or("missing run id")?;
+            let output = args
+                .iter()
+                .position(|arg| arg == "--output")
+                .and_then(|index| args.get(index + 1))
+                .map_or_else(
+                    || PathBuf::from("benchmarks/results"),
+                    |value| PathBuf::from(value.as_str()),
+                );
+            print!("{}", report_run(&output, run_id)?);
+        }
+        _ => return Err("expected bench m2 or bench report".into()),
+    }
+    Ok(())
 }
 
 fn inspect(path: &Path, json: bool) -> Result<(), Box<dyn std::error::Error>> {
@@ -96,7 +217,8 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 fn main() -> ExitCode {
-    let mut args = env::args().skip(1);
+    let argv = env::args().skip(1).collect::<Vec<_>>();
+    let mut args = argv.iter().cloned();
     match (args.next().as_deref(), args.next()) {
         (Some("inspect"), Some(path)) => {
             let json = args.next().as_deref() == Some("--json");
@@ -117,6 +239,20 @@ fn main() -> ExitCode {
                 }
             }
         }
+        (Some("openvm"), _) => match openvm_command(&argv) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("zk-jam: {error}");
+                ExitCode::FAILURE
+            }
+        },
+        (Some("bench"), _) => match bench_command(&argv) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("zk-jam: {error}");
+                ExitCode::FAILURE
+            }
+        },
         _ => {
             usage();
             ExitCode::FAILURE

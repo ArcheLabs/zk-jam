@@ -1,0 +1,21 @@
+[package]
+name = "zk-jam-openvm-m2-guests"
+version = "2.0.1"
+edition = "2021"
+
+[workspace]
+
+[dependencies]
+openvm = { version = "2.0.1", git = "https://github.com/openvm-org/openvm.git", rev = "b820b25baab6c5d9b055f64e0286b6b1058e707c", features = ["std"] }
+
+[[bin]]
+name = "m2-arithmetic-v1"
+path = "src/arithmetic.rs"
+
+[[bin]]
+name = "m2-branch-v1"
+path = "src/branch.rs"
+
+[[bin]]
+name = "m2-memory-v1"
+path = "src/memory.rs"

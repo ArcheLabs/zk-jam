@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ZK-JAM M2 environment",
+  "type": "object",
+  "required": ["schema_version", "run_id", "os", "arch", "backend", "openvm_version", "openvm_revision", "security_bits", "guest_toolchain"],
+  "properties": {
+    "schema_version": {"const": "environment-v1"},
+    "run_id": {"type": "string"},
+    "git_commit": {"type": ["string", "null"]},
+    "os": {"type": "string"},
+    "arch": {"type": "string"},
+    "cpu": {"type": ["string", "null"]},
+    "logical_cpus": {"type": ["integer", "null"]},
+    "memory_bytes": {"type": ["integer", "null"]},
+    "backend": {"enum": ["cpu", "gpu"]},
+    "openvm_version": {"type": "string"},
+    "openvm_revision": {"type": "string"},
+    "security_bits": {"type": "integer"},
+    "guest_toolchain": {"type": "string"},
+    "peak_rss_methodology": {"type": "string"}
+  }
+}

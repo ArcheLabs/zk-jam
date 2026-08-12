@@ -1,0 +1,8 @@
+{
+  "schema_version": "baseline-v1",
+  "status": "pending-local-run",
+  "openvm_version": "2.0.1",
+  "openvm_revision": "b820b25baab6c5d9b055f64e0286b6b1058e707c",
+  "backend": "cpu",
+  "note": "Generated benchmark runs are immutable and are recorded under benchmarks/results/<run-id>."
+}
