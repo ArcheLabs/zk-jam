@@ -3,20 +3,33 @@
   "title": "ZK-JAM M2 environment",
   "type": "object",
   "required": ["schema_version", "run_id", "os", "arch", "backend", "openvm_version", "openvm_revision", "security_bits", "guest_toolchain"],
+  "allOf": [{
+    "if": {"properties": {"schema_version": {"const": "environment-v2"}}},
+    "then": {"required": ["git_dirty", "build_profile", "openvm_config_hash", "rss_scope", "rss_includes_keygen", "rss_method"]}
+  }],
   "properties": {
-    "schema_version": {"const": "environment-v1"},
+    "schema_version": {"enum": ["environment-v1", "environment-v2"]},
     "run_id": {"type": "string"},
     "git_commit": {"type": ["string", "null"]},
+    "git_dirty": {"type": "boolean"},
     "os": {"type": "string"},
     "arch": {"type": "string"},
     "cpu": {"type": ["string", "null"]},
     "logical_cpus": {"type": ["integer", "null"]},
     "memory_bytes": {"type": ["integer", "null"]},
+    "kernel": {"type": ["string", "null"]},
+    "rustc_version": {"type": ["string", "null"]},
+    "cargo_version": {"type": ["string", "null"]},
+    "build_profile": {"type": "string"},
     "backend": {"enum": ["cpu", "gpu"]},
     "openvm_version": {"type": "string"},
     "openvm_revision": {"type": "string"},
     "security_bits": {"type": "integer"},
+    "openvm_config_hash": {"type": ["string", "null"]},
     "guest_toolchain": {"type": "string"},
-    "peak_rss_methodology": {"type": "string"}
+    "peak_rss_methodology": {"type": "string"},
+    "rss_scope": {"enum": ["sample", "benchmark-case", "whole-run"]},
+    "rss_includes_keygen": {"type": "boolean"},
+    "rss_method": {"type": "string"}
   }
 }

@@ -66,9 +66,33 @@ pub struct OpenVmProgramArtifact {
     pub openvm_revision: &'static str,
     pub emission_path: &'static str,
     pub executable_bytes: usize,
+    pub serialized_executable_size_bytes: usize,
     pub build_time_ns: u128,
     pub transpile_time_ns: u128,
     exe: Arc<openvm_sdk::openvm_circuit::arch::instructions::exe::VmExe<openvm_sdk::F>>,
+}
+
+impl OpenVmProgramArtifact {
+    fn clone_for_proving(&self) -> Self {
+        Self {
+            benchmark: self.benchmark.clone(),
+            openvm_version: self.openvm_version,
+            openvm_revision: self.openvm_revision,
+            emission_path: self.emission_path,
+            executable_bytes: self.executable_bytes,
+            serialized_executable_size_bytes: self.serialized_executable_size_bytes,
+            build_time_ns: self.build_time_ns,
+            transpile_time_ns: self.transpile_time_ns,
+            exe: self.exe.clone(),
+        }
+    }
+}
+
+/// A program with OpenVM proving and verification keys prepared once for reuse.
+pub struct OpenVmPreparedProgram {
+    pub program: OpenVmProgramArtifact,
+    pub keygen_time_ns: u128,
+    sdk: OpenVmSdk,
 }
 
 /// Result of running one M2 program.
@@ -106,6 +130,20 @@ impl OpenVmProofArtifact {
         serde_json::from_slice(bytes).wrap_err("reload OpenVM proof artifact")
     }
 
+    pub fn proof_payload_size_bytes(&self) -> usize {
+        self.proof.proof.len()
+            + self.proof.user_pvs_proof.len()
+            + self
+                .proof
+                .deferral_merkle_proofs
+                .as_ref()
+                .map_or(0, Vec::len)
+    }
+
+    pub fn artifact_size_bytes(&self) -> Result<usize> {
+        Ok(self.to_bytes()?.len())
+    }
+
     /// Verify a reloaded proof and its application-level output/context binding.
     pub fn verify(&self, expected_context: &str) -> Result<()> {
         if self.context_hash != expected_context {
@@ -140,7 +178,7 @@ impl OpenVmBackend {
             revision: OPENVM_REVISION.to_string(),
             backend: OPENVM_BACKEND.to_string(),
             security_bits: 100,
-            emission_path: "B: RV32IM ELF -> official OpenVM transpiler -> VmExe",
+            emission_path: "B: RV32IM ELF -> official OpenVM transpiler -> VmExe".to_string(),
             guest_toolchain: env::var("OPENVM_RUST_TOOLCHAIN")
                 .unwrap_or_else(|_| "OpenVM default nightly-2026-01-18".to_string()),
         }
@@ -170,15 +208,32 @@ impl OpenVmBackend {
         let transpile_time_ns = transpile_started.elapsed().as_nanos();
         let executable_bytes =
             exe.program.instructions_and_debug_infos.len() * 32 + exe.init_memory.len() * 8;
+        let serialized_executable_size_bytes = serde_json::to_vec(&*exe)
+            .wrap_err("serialize OpenVM executable for size measurement")?
+            .len();
         Ok(OpenVmProgramArtifact {
             benchmark,
             openvm_version: OPENVM_VERSION,
             openvm_revision: OPENVM_REVISION,
             emission_path: "B: RV32IM ELF -> official OpenVM transpiler -> VmExe",
             executable_bytes,
+            serialized_executable_size_bytes,
             build_time_ns,
             transpile_time_ns,
             exe,
+        })
+    }
+
+    /// Prepare OpenVM proving and verifying keys once for a program/configuration.
+    pub fn prepare(&self, program: OpenVmProgramArtifact) -> Result<OpenVmPreparedProgram> {
+        let sdk = sdk();
+        let keygen_started = Instant::now();
+        let _ = sdk.app_keygen();
+        let _ = sdk.agg_keygen();
+        Ok(OpenVmPreparedProgram {
+            program,
+            keygen_time_ns: keygen_started.elapsed().as_nanos(),
+            sdk,
         })
     }
 
@@ -197,7 +252,29 @@ impl OpenVmBackend {
             benchmark: program.benchmark.clone(),
             public_output,
             elapsed_ns: started.elapsed().as_nanos(),
-            executable_bytes: program.executable_bytes,
+            executable_bytes: program.serialized_executable_size_bytes,
+        })
+    }
+
+    pub fn execute_prepared(
+        &self,
+        prepared: &OpenVmPreparedProgram,
+        input: M2Input,
+    ) -> Result<OpenVmExecutionResult> {
+        let stdin = input.stdin();
+        let started = Instant::now();
+        let public_output = prepared
+            .sdk
+            .execute(
+                ExecutableFormat::SharedVmExe(prepared.program.exe.clone()),
+                stdin,
+            )
+            .map_err(|error| eyre!("execute {}: {error}", prepared.program.benchmark.name()))?;
+        Ok(OpenVmExecutionResult {
+            benchmark: prepared.program.benchmark.clone(),
+            public_output,
+            elapsed_ns: started.elapsed().as_nanos(),
+            executable_bytes: prepared.program.serialized_executable_size_bytes,
         })
     }
 
@@ -206,35 +283,46 @@ impl OpenVmBackend {
         program: &OpenVmProgramArtifact,
         input: M2Input,
     ) -> Result<OpenVmProofArtifact> {
-        let sdk = sdk();
-        let execution = self.execute(program, input)?;
-        let keygen_started = Instant::now();
-        let _ = sdk.app_keygen();
-        let _ = sdk.agg_keygen();
-        let keygen_time_ns = keygen_started.elapsed().as_nanos();
+        let prepared = self.prepare(program.clone_for_proving());
+        let prepared = prepared?;
+        self.prove_prepared(&prepared, input)
+    }
+
+    pub fn prove_prepared(
+        &self,
+        prepared: &OpenVmPreparedProgram,
+        input: M2Input,
+    ) -> Result<OpenVmProofArtifact> {
         let prove_started = Instant::now();
-        let (proof, baseline) = sdk
+        let (proof, baseline) = prepared
+            .sdk
             .prove(
-                ExecutableFormat::SharedVmExe(program.exe.clone()),
+                ExecutableFormat::SharedVmExe(prepared.program.exe.clone()),
                 input.stdin(),
                 &[],
             )
-            .map_err(|error| eyre!("prove {}: {error}", program.benchmark.name()))?;
+            .map_err(|error| eyre!("prove {}: {error}", prepared.program.benchmark.name()))?;
         let prove_time_ns = prove_started.elapsed().as_nanos();
+        let public_output = proof
+            .user_pvs_proof
+            .public_values
+            .iter()
+            .map(|value| value.as_canonical_u32() as u8)
+            .collect::<Vec<_>>();
         let versioned = VersionedVmStarkProof::new(proof)
             .map_err(|error| eyre!("encode OpenVM proof: {error}"))?;
-        let context_hash = input.context_hash(&program.benchmark);
-        let (_, agg_vk) = sdk.agg_keygen();
+        let context_hash = input.context_hash(&prepared.program.benchmark);
+        let (_, agg_vk) = prepared.sdk.agg_keygen();
         Ok(OpenVmProofArtifact {
-            benchmark: program.benchmark.clone(),
+            benchmark: prepared.program.benchmark.clone(),
             openvm_version: OPENVM_VERSION.to_string(),
             openvm_revision: OPENVM_REVISION.to_string(),
             backend: OPENVM_BACKEND.to_string(),
             security_bits: 100,
-            keygen_time_ns,
+            keygen_time_ns: prepared.keygen_time_ns,
             prove_time_ns,
             context_hash,
-            public_output: execution.public_output,
+            public_output,
             proof: versioned,
             baseline: baseline.into(),
             agg_vk,

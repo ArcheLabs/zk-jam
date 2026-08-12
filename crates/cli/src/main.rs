@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
     process::ExitCode,
 };
-use zk_jam_benchmark::{report_run, run_m2};
+use zk_jam_benchmark::{report_run, run_m2, run_worker, BenchmarkOptions};
 use zk_jam_openvm_backend::{M2Benchmark, M2Input, OpenVmBackend};
 use zk_jam_refine_interface::{
     CanonicalCodec, PvmBlockV1, PvmInstructionV1, PvmProgramV1, PvmTerminatorV1, RefineCaseV1,
@@ -18,7 +18,7 @@ fn usage() {
     eprintln!("       zk-jam openvm execute arithmetic|branch|memory");
     eprintln!("       zk-jam openvm prove arithmetic|branch|memory");
     eprintln!("       zk-jam openvm verify <artifact.json>");
-    eprintln!("       zk-jam bench m2 --backend cpu [--benchmark arithmetic|branch|memory] [--output benchmarks/results]");
+    eprintln!("       zk-jam bench m2 --backend cpu [--benchmark arithmetic|branch|memory] [--samples N] [--warmup N] [--quick] [--output benchmarks/results]");
     eprintln!("       zk-jam bench report <run-id> [--output benchmarks/results]");
 }
 
@@ -76,7 +76,7 @@ fn openvm_command(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn bench_command(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    if args.get(0).map(String::as_str) != Some("bench") {
+    if args.first().map(String::as_str) != Some("bench") {
         return Err("invalid bench command".into());
     }
     match args.get(1).map(String::as_str) {
@@ -84,6 +84,9 @@ fn bench_command(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             let mut backend = "cpu";
             let mut benchmark = None;
             let mut output = PathBuf::from("benchmarks/results");
+            let mut samples = 10;
+            let mut warmup = 1;
+            let mut quick = false;
             let mut index = 2;
             while index < args.len() {
                 match args[index].as_str() {
@@ -104,10 +107,37 @@ fn bench_command(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
                             PathBuf::from(args.get(index + 1).ok_or("missing --output value")?);
                         index += 2;
                     }
+                    "--samples" => {
+                        samples = args
+                            .get(index + 1)
+                            .ok_or("missing --samples value")?
+                            .parse::<usize>()?;
+                        index += 2;
+                    }
+                    "--warmup" => {
+                        warmup = args
+                            .get(index + 1)
+                            .ok_or("missing --warmup value")?
+                            .parse::<usize>()?;
+                        index += 2;
+                    }
+                    "--quick" => {
+                        quick = true;
+                        index += 1;
+                    }
                     other => return Err(format!("unknown bench option: {other}").into()),
                 }
             }
-            let run = run_m2(&output, benchmark, backend)?;
+            let run = run_m2(
+                &output,
+                benchmark,
+                backend,
+                BenchmarkOptions {
+                    samples,
+                    warmup,
+                    quick,
+                },
+            )?;
             println!(
                 "run_id: {}\nresult_dir: {}",
                 run.run_id,
@@ -128,6 +158,55 @@ fn bench_command(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         }
         _ => return Err("expected bench m2 or bench report".into()),
     }
+    Ok(())
+}
+
+fn bench_worker_command(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let mut benchmark = None;
+    let mut case = None;
+    let mut samples = 10;
+    let mut warmup = 1;
+    let mut output = None;
+    let mut index = 2;
+    while index < args.len() {
+        match args[index].as_str() {
+            "m2" => index += 1,
+            "--benchmark" => {
+                benchmark = args.get(index + 1).cloned();
+                index += 2;
+            }
+            "--case" => {
+                case = args.get(index + 1).cloned();
+                index += 2;
+            }
+            "--samples" => {
+                samples = args
+                    .get(index + 1)
+                    .ok_or("missing --samples value")?
+                    .parse()?;
+                index += 2;
+            }
+            "--warmup" => {
+                warmup = args
+                    .get(index + 1)
+                    .ok_or("missing --warmup value")?
+                    .parse()?;
+                index += 2;
+            }
+            "--output" => {
+                output = args.get(index + 1).map(PathBuf::from);
+                index += 2;
+            }
+            other => return Err(format!("unknown worker option: {other}").into()),
+        }
+    }
+    run_worker(
+        benchmark.as_deref().ok_or("missing worker benchmark")?,
+        case.as_deref().ok_or("missing worker case")?,
+        samples,
+        warmup,
+        output.as_deref().ok_or("missing worker output")?,
+    )?;
     Ok(())
 }
 
@@ -250,6 +329,13 @@ fn main() -> ExitCode {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
                 eprintln!("zk-jam: {error}");
+                ExitCode::FAILURE
+            }
+        },
+        (Some("__bench-worker"), _) => match bench_worker_command(&argv) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("zk-jam worker: {error}");
                 ExitCode::FAILURE
             }
         },
