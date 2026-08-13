@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ZK-JAM M3 paired translation benchmark v1",
+  "type": "object",
+  "required": [
+    "schema_version", "jambda_revision", "openvm_version", "openvm_revision",
+    "backend", "samples", "warmup", "pairs", "complete"
+  ],
+  "properties": {
+    "schema_version": {"const": "m3-paired-v1"},
+    "jambda_revision": {"type": "string", "minLength": 7},
+    "openvm_version": {"type": "string"},
+    "openvm_revision": {"type": "string", "minLength": 7},
+    "backend": {"const": "cpu"},
+    "samples": {"type": "integer", "minimum": 1},
+    "warmup": {"type": "integer", "minimum": 0},
+    "pairs": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {"$ref": "#/$defs/pair"}
+    },
+    "complete": {"type": "boolean"}
+  },
+  "$defs": {
+    "optionalNumber": {"type": ["integer", "number", "null"], "minimum": 0},
+    "optionalRatio": {"type": ["number", "null"], "minimum": 0},
+    "pair": {
+      "type": "object",
+      "required": [
+        "workload", "native_case", "translated_case", "translation_time_ns",
+        "pvm_instructions", "translated_instructions", "expansion_ratio",
+        "native_prove_ns", "translated_prove_ns", "prove_overhead_ratio",
+        "native_peak_rss_bytes", "translated_peak_rss_bytes", "rss_overhead_ratio",
+        "native_proof_bytes", "translated_proof_bytes", "native_output_hex",
+        "translated_output_hex", "native_verified", "translated_verified", "error"
+      ],
+      "properties": {
+        "workload": {"type": "string"},
+        "native_case": {"type": "string"},
+        "translated_case": {"type": "string"},
+        "translation_time_ns": {"type": "integer", "minimum": 0},
+        "pvm_instructions": {"type": "integer", "minimum": 0},
+        "translated_instructions": {"type": "integer", "minimum": 0},
+        "expansion_ratio": {"type": "number", "minimum": 0},
+        "native_prove_ns": {"$ref": "#/$defs/optionalNumber"},
+        "translated_prove_ns": {"$ref": "#/$defs/optionalNumber"},
+        "prove_overhead_ratio": {"$ref": "#/$defs/optionalRatio"},
+        "native_peak_rss_bytes": {"$ref": "#/$defs/optionalNumber"},
+        "translated_peak_rss_bytes": {"$ref": "#/$defs/optionalNumber"},
+        "rss_overhead_ratio": {"$ref": "#/$defs/optionalRatio"},
+        "native_proof_bytes": {"$ref": "#/$defs/optionalNumber"},
+        "translated_proof_bytes": {"$ref": "#/$defs/optionalNumber"},
+        "native_output_hex": {"type": ["string", "null"]},
+        "translated_output_hex": {"type": ["string", "null"]},
+        "native_verified": {"type": "boolean"},
+        "translated_verified": {"type": "boolean"},
+        "error": {"type": ["string", "null"]}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

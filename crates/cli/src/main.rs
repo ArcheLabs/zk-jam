@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
     process::ExitCode,
 };
-use zk_jam_benchmark::{report_run, run_m2, run_worker, BenchmarkOptions};
+use zk_jam_benchmark::{report_run, run_m2, run_m3, run_m3_worker, run_worker, BenchmarkOptions};
 use zk_jam_openvm_backend::{M2Benchmark, M2Input, OpenVmBackend};
 use zk_jam_refine_interface::{
     CanonicalCodec, PvmBlockV1, PvmInstructionV1, PvmProgramV1, PvmTerminatorV1, RefineCaseV1,
@@ -20,6 +20,7 @@ fn usage() {
     eprintln!("       zk-jam openvm verify <artifact.json>");
     eprintln!("       zk-jam bench m2 --backend cpu [--benchmark arithmetic|branch|memory] [--samples N] [--warmup N] [--quick] [--output benchmarks/results]");
     eprintln!("       zk-jam bench report <run-id> [--output benchmarks/results]");
+    eprintln!("       zk-jam bench m3 [--samples N] [--warmup N] [--output benchmarks/results]");
 }
 
 fn benchmark(name: &str) -> Result<(M2Benchmark, M2Input), Box<dyn std::error::Error>> {
@@ -155,6 +156,38 @@ fn bench_command(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
                     |value| PathBuf::from(value.as_str()),
                 );
             print!("{}", report_run(&output, run_id)?);
+        }
+        Some("m3") => {
+            let mut output = PathBuf::from("benchmarks/results");
+            let mut samples = 5;
+            let mut warmup = 1;
+            let mut index = 2;
+            while index < args.len() {
+                match args[index].as_str() {
+                    "--output" => {
+                        output =
+                            PathBuf::from(args.get(index + 1).ok_or("missing --output value")?);
+                        index += 2;
+                    }
+                    "--samples" => {
+                        samples = args
+                            .get(index + 1)
+                            .ok_or("missing --samples value")?
+                            .parse()?;
+                        index += 2;
+                    }
+                    "--warmup" => {
+                        warmup = args
+                            .get(index + 1)
+                            .ok_or("missing --warmup value")?
+                            .parse()?;
+                        index += 2;
+                    }
+                    other => return Err(format!("unknown bench option: {other}").into()),
+                }
+            }
+            let report = run_m3(&output, samples, warmup)?;
+            println!("M3 complete: {}", report.complete);
         }
         _ => return Err("expected bench m2 or bench report".into()),
     }
@@ -339,9 +372,71 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        (Some("__m3-worker"), _) => match m3_worker_command(&argv) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("zk-jam M3 worker: {error}");
+                ExitCode::FAILURE
+            }
+        },
         _ => {
             usage();
             ExitCode::FAILURE
         }
     }
+}
+
+fn m3_worker_command(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let mut benchmark = None;
+    let mut a = None;
+    let mut b = None;
+    let mut samples = 1;
+    let mut warmup = 0;
+    let mut output = None;
+    let mut index = 1;
+    while index < args.len() {
+        match args[index].as_str() {
+            "__m3-worker" => index += 1,
+            "--benchmark" => {
+                benchmark = args.get(index + 1).cloned();
+                index += 2;
+            }
+            "--a" => {
+                a = Some(args.get(index + 1).ok_or("missing --a value")?.parse()?);
+                index += 2;
+            }
+            "--b" => {
+                b = Some(args.get(index + 1).ok_or("missing --b value")?.parse()?);
+                index += 2;
+            }
+            "--samples" => {
+                samples = args
+                    .get(index + 1)
+                    .ok_or("missing --samples value")?
+                    .parse()?;
+                index += 2;
+            }
+            "--warmup" => {
+                warmup = args
+                    .get(index + 1)
+                    .ok_or("missing --warmup value")?
+                    .parse()?;
+                index += 2;
+            }
+            "--output" => {
+                output = args.get(index + 1).map(PathBuf::from);
+                index += 2;
+            }
+            other => return Err(format!("unknown M3 worker option: {other}").into()),
+        }
+    }
+    run_m3_worker(
+        benchmark.as_deref().ok_or("missing M3 worker benchmark")?,
+        a.ok_or("missing M3 worker a")?,
+        b.ok_or("missing M3 worker b")?,
+        samples,
+        warmup,
+        output.as_deref().ok_or("missing M3 worker output")?,
+    )?;
+    Ok(())
 }

@@ -33,6 +33,9 @@ pub enum M2Benchmark {
     Arithmetic,
     Branch,
     Memory { bytes: usize },
+    M3TranslationArithmetic,
+    M3TranslationBranchTrue,
+    M3TranslationMemory16K,
 }
 
 impl M2Benchmark {
@@ -41,12 +44,18 @@ impl M2Benchmark {
             Self::Arithmetic => "arithmetic",
             Self::Branch => "branch",
             Self::Memory { .. } => "memory",
+            Self::M3TranslationArithmetic => "m3-translation-arithmetic",
+            Self::M3TranslationBranchTrue => "m3-translation-branch-true",
+            Self::M3TranslationMemory16K => "m3-translation-memory-16384",
         }
     }
 
     pub fn label(&self) -> String {
         match self {
             Self::Memory { bytes } => format!("memory-{bytes}"),
+            Self::M3TranslationArithmetic => "m3-translation-arithmetic".to_string(),
+            Self::M3TranslationBranchTrue => "m3-translation-branch-true".to_string(),
+            Self::M3TranslationMemory16K => "m3-translation-memory-16384".to_string(),
             _ => self.name().to_string(),
         }
     }
@@ -56,6 +65,9 @@ impl M2Benchmark {
             Self::Arithmetic => "m2-arithmetic-v1",
             Self::Branch => "m2-branch-v1",
             Self::Memory { .. } => "m2-memory-v1",
+            Self::M3TranslationArithmetic => "m3-translation-arithmetic-v1",
+            Self::M3TranslationBranchTrue => "m3-translation-branch-v1",
+            Self::M3TranslationMemory16K => "m3-translation-memory-v1",
         }
     }
 }
@@ -214,9 +226,18 @@ impl OpenVmBackend {
         let transpile_time_ns = transpile_started.elapsed().as_nanos();
         let executable_bytes =
             exe.program.instructions_and_debug_infos.len() * 32 + exe.init_memory.len() * 8;
-        let serialized_executable_size_bytes = serde_json::to_vec(&*exe)
-            .wrap_err("serialize OpenVM executable for size measurement")?
-            .len();
+        // `VmExe::init_memory` uses tuple keys, which JSON cannot encode as object keys. Keep the
+        // measurement deterministic by serializing the same executable components with the sparse
+        // memory image represented as ordered triples.
+        let init_memory = exe
+            .init_memory
+            .iter()
+            .map(|((address_space, address), value)| (*address_space, *address, *value))
+            .collect::<Vec<_>>();
+        let serialized_executable_size_bytes =
+            serde_json::to_vec(&(&exe.program, exe.pc_start, init_memory, &exe.fn_bounds))
+                .wrap_err("serialize OpenVM executable for size measurement")?
+                .len();
         Ok(OpenVmProgramArtifact {
             benchmark,
             openvm_version: OPENVM_VERSION,

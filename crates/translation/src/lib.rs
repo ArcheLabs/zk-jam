@@ -147,6 +147,10 @@ pub enum GenericInstruction {
         source: u8,
         address: u32,
     },
+    StoreImm32 {
+        address: u32,
+        value: u32,
+    },
     Branch {
         opcode: u8,
         left: u8,
@@ -167,7 +171,7 @@ impl GenericInstruction {
             Self::Move { .. } => 1,
             Self::Add32 { .. } | Self::Sub32 { .. } | Self::Mul32 { .. } | Self::Xor { .. } => 1,
             Self::Add64 { .. } | Self::Sub64 { .. } | Self::Mul64 { .. } => 4,
-            Self::Load32 { .. } | Self::Store32 { .. } => 2,
+            Self::Load32 { .. } | Self::Store32 { .. } | Self::StoreImm32 { .. } => 2,
             Self::Branch { .. } => 2,
             Self::Jump | Self::Fallthrough | Self::Halt | Self::Trap(_) => 1,
         }
@@ -322,6 +326,19 @@ fn emit_instruction(
             source: regs.ra,
             address: imm_u32()?,
         }),
+        opcode::STORE_IMM_U32 => {
+            if instruction.immediate.len() != 8 {
+                return Err(TranslationError::InvalidImmediate {
+                    opcode: instruction.opcode,
+                    expected: 8,
+                    actual: instruction.immediate.len(),
+                });
+            }
+            output.push(GenericInstruction::StoreImm32 {
+                address: u32::from_le_bytes(instruction.immediate[..4].try_into().unwrap()),
+                value: u32::from_le_bytes(instruction.immediate[4..].try_into().unwrap()),
+            });
+        }
         opcode::BRANCH_EQ
         | opcode::BRANCH_NE
         | opcode::BRANCH_LT_U
@@ -388,7 +405,9 @@ impl PvmMemoryV0 {
     pub fn map_zeroed_page(&mut self, page: u32, writable: bool) -> Result<(), TranslationError> {
         let address = page.saturating_mul(PVM_PAGE_SIZE);
         self.check_address(address, 1)?;
-        self.pages.entry(page).or_default();
+        self.pages
+            .entry(page)
+            .or_insert_with(|| Box::new([0; PVM_PAGE_SIZE as usize]));
         self.writable_pages.insert(page, writable);
         Ok(())
     }
@@ -495,13 +514,12 @@ impl PvmMachineV0 {
         self.output_register = output_register;
         let mut block = 0usize;
         let mut steps = 0usize;
-        let mut branch = false;
         while steps < 1_000_000 {
             let current = program
                 .blocks
                 .get(block)
                 .ok_or(TranslationError::InvalidProgram("block index out of range"))?;
-            branch = false;
+            let mut branch = false;
             for instruction in &current.instructions {
                 branch = self.step(instruction)?;
                 steps += 1;
@@ -602,6 +620,19 @@ impl PvmMachineV0 {
             opcode::STORE_U32 => {
                 self.memory
                     .write(imm_u32()?, 4, self.registers[r.ra as usize])?;
+                false
+            }
+            opcode::STORE_IMM_U32 => {
+                if instruction.immediate.len() != 8 {
+                    return Err(TranslationError::InvalidImmediate {
+                        opcode: instruction.opcode,
+                        expected: 8,
+                        actual: instruction.immediate.len(),
+                    });
+                }
+                let address = u32::from_le_bytes(instruction.immediate[..4].try_into().unwrap());
+                let value = u32::from_le_bytes(instruction.immediate[4..].try_into().unwrap());
+                self.memory.write(address, 4, value as u64)?;
                 false
             }
             opcode::BRANCH_EQ => self.registers[r.ra as usize] == self.registers[r.rb as usize],
@@ -960,7 +991,7 @@ mod tests {
         let value = memory
             .run(&workload_program(M3Workload::Memory16K), 2)
             .unwrap() as u32;
-        assert_eq!(value, 0x6B4B_4A78);
+        assert_eq!(value, 0x80F0_2E78);
     }
 
     #[test]
@@ -968,8 +999,8 @@ mod tests {
         let mut memory = PvmMemoryV0::new();
         memory.map_zeroed_page(1, true).unwrap();
         memory.map_zeroed_page(2, true).unwrap();
-        memory.write(4094, 4, 0xAABB_CCDD).unwrap();
-        assert_eq!(memory.read(4094, 4).unwrap(), 0xAABB_CCDD);
+        memory.write(2 * PVM_PAGE_SIZE - 2, 4, 0xAABB_CCDD).unwrap();
+        assert_eq!(memory.read(2 * PVM_PAGE_SIZE - 2, 4).unwrap(), 0xAABB_CCDD);
         assert!(memory.read(0, 1).is_err());
         memory.map_zeroed_page(3, false).unwrap();
         assert!(memory.write(3 * PVM_PAGE_SIZE, 1, 1).is_err());
@@ -982,7 +1013,7 @@ mod tests {
         program.blocks[0].instructions[0].immediate = 1u32.to_le_bytes().to_vec();
         assert!(matches!(
             translate(M3Workload::Arithmetic, &program),
-            Err(TranslationError::InvalidProgram(_))
+            Err(TranslationError::UnsupportedOpcode(10))
         ));
 
         let mut program = arithmetic_program();

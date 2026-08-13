@@ -19,3 +19,15 @@ path = "src/branch.rs"
 [[bin]]
 name = "m2-memory-v1"
 path = "src/memory.rs"
+
+[[bin]]
+name = "m3-translation-arithmetic-v1"
+path = "src/m3_translation_arithmetic.rs"
+
+[[bin]]
+name = "m3-translation-branch-v1"
+path = "src/m3_translation_branch.rs"
+
+[[bin]]
+name = "m3-translation-memory-v1"
+path = "src/m3_translation_memory.rs"

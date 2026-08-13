@@ -6,4 +6,6 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
+serde.workspace = true
+thiserror.workspace = true
 zk-jam-refine-interface = { path = "../refine-interface" }

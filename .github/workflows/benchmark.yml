@@ -93,9 +93,44 @@ jobs:
   m3:
     if: inputs.milestone == 'm3'
     runs-on: ubuntu-latest
+    timeout-minutes: 360
     steps:
-      - name: M3 dispatch placeholder
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install pinned OpenVM guest toolchain
+        run: rustup toolchain install nightly-2026-01-18 --profile minimal --component rust-src
+      - name: Validate benchmark inputs
+        env:
+          SAMPLES: ${{ inputs.samples }}
+          WARMUP: ${{ inputs.warmup }}
         run: |
-          echo "M3 benchmark wiring belongs to work packages 2 and 3." >> "$GITHUB_STEP_SUMMARY"
-          echo "M3 is not implemented in the M2 finalization work package." >&2
-          exit 1
+          [[ "$SAMPLES" =~ ^[1-9][0-9]*$ ]]
+          [[ "$WARMUP" =~ ^[0-9]+$ ]]
+      - name: Run M3 paired benchmark
+        env:
+          SAMPLES: ${{ inputs.samples }}
+          WARMUP: ${{ inputs.warmup }}
+        run: |
+          cargo run --release -p zk-jam -- bench m3 \
+            --samples "$SAMPLES" --warmup "$WARMUP" --output benchmarks/results
+      - name: Locate M3 result
+        id: result
+        run: |
+          result_dir="$(find benchmarks/results -mindepth 1 -maxdepth 1 -type d | sort | tail -n 1)"
+          test -n "$result_dir"
+          echo "dir=$result_dir" >> "$GITHUB_OUTPUT"
+      - name: Upload M3 artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: m3-translation-benchmark-${{ github.run_id }}
+          if-no-files-found: error
+          path: |
+            ${{ steps.result.outputs.dir }}/m3-benchmark.json
+            ${{ steps.result.outputs.dir }}/m3-benchmark.csv
+            ${{ steps.result.outputs.dir }}/m3-benchmark.md
+      - name: Publish M3 report to job summary
+        run: cat "${{ steps.result.outputs.dir }}/m3-benchmark.md" >> "$GITHUB_STEP_SUMMARY"
+      - name: Enforce M3 completion gate
+        run: |
+          test "$(jq -r '.pairs | length' "${{ steps.result.outputs.dir }}/m3-benchmark.json")" = "3"
+          test "$(jq -r '.complete' "${{ steps.result.outputs.dir }}/m3-benchmark.json")" = "true"

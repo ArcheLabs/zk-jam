@@ -4246,6 +4246,7 @@ dependencies = [
  "serde_json",
  "zk-jam-openvm-backend",
  "zk-jam-refine-interface",
+ "zk-jam-translation",
 ]
 
 [[package]]
@@ -4292,6 +4293,8 @@ dependencies = [
 name = "zk-jam-translation"
 version = "0.1.0"
 dependencies = [
+ "serde",
+ "thiserror 2.0.20",
  "zk-jam-refine-interface",
 ]
 

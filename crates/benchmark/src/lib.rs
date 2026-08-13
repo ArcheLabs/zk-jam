@@ -13,11 +13,59 @@ use serde::{Deserialize, Serialize};
 use zk_jam_openvm_backend::{
     M2Benchmark, M2Input, OpenVmBackend, OpenVmPreparedProgram, OPENVM_PINNED_GUEST_TOOLCHAIN,
 };
+use zk_jam_translation::{translate, workload_program, M3Workload, JAMBDA_REVISION};
 
 pub use zk_jam_refine_interface::RefineCaseV1;
 
 pub const DISCLAIMER: &str = "These results measure the OpenVM proving substrate and ZK-JAM integration only. They do not yet measure PVM Translation, PVM memory emulation, Refine Host Calls, or Native PVM proving.";
 pub const MANDATORY_CASES: usize = 7;
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct M3PairRecord {
+    pub workload: String,
+    pub native_case: String,
+    pub translated_case: String,
+    pub translation_time_ns: u128,
+    pub pvm_instructions: usize,
+    pub translated_instructions: usize,
+    pub expansion_ratio: f64,
+    pub native_prove_ns: Option<u128>,
+    pub translated_prove_ns: Option<u128>,
+    pub prove_overhead_ratio: Option<f64>,
+    pub native_peak_rss_bytes: Option<u64>,
+    pub translated_peak_rss_bytes: Option<u64>,
+    pub rss_overhead_ratio: Option<f64>,
+    pub native_proof_bytes: Option<usize>,
+    pub translated_proof_bytes: Option<usize>,
+    pub native_output_hex: Option<String>,
+    pub translated_output_hex: Option<String>,
+    pub native_verified: bool,
+    pub translated_verified: bool,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct M3BenchmarkReport {
+    pub schema_version: String,
+    pub jambda_revision: String,
+    pub openvm_version: String,
+    pub openvm_revision: String,
+    pub backend: String,
+    pub samples: usize,
+    pub warmup: usize,
+    pub pairs: Vec<M3PairRecord>,
+    pub complete: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct M3CaseMeasurement {
+    prove_ns: Option<u128>,
+    proof_bytes: Option<usize>,
+    output_hex: Option<String>,
+    verified: bool,
+    peak_rss_bytes: Option<u64>,
+    error: Option<String>,
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct EnvironmentReport {
@@ -316,6 +364,284 @@ pub fn run_m2(
         result_dir,
         summary,
     })
+}
+
+pub fn run_m3(output_root: &Path, samples: usize, warmup: usize) -> Result<M3BenchmarkReport> {
+    if samples == 0 {
+        return Err(eyre!("--samples must be at least 1"));
+    }
+    let started = Instant::now();
+    let run_id = format!("{}_{}_m3", utc_run_stamp(), git_short());
+    let result_dir = output_root.join(&run_id);
+    fs::create_dir_all(&result_dir)?;
+    let pairs = [
+        (
+            M3Workload::Arithmetic,
+            M2Benchmark::Arithmetic,
+            M2Input::arithmetic(7, 9),
+        ),
+        (
+            M3Workload::BranchTrue,
+            M2Benchmark::Branch,
+            M2Input::branch(21, 8),
+        ),
+        (
+            M3Workload::Memory16K,
+            M2Benchmark::Memory { bytes: 16 * 1024 },
+            M2Input::memory(0x1234_5678, 16 * 1024)?,
+        ),
+    ];
+    let mut reports = Vec::with_capacity(pairs.len());
+    for (workload, native_benchmark, input) in pairs {
+        let translation_started = Instant::now();
+        let translated = translate(workload, &workload_program(workload))?;
+        let translation_time_ns = translation_started.elapsed().as_nanos();
+        let translated_benchmark = match workload {
+            M3Workload::Arithmetic => M2Benchmark::M3TranslationArithmetic,
+            M3Workload::BranchTrue => M2Benchmark::M3TranslationBranchTrue,
+            M3Workload::Memory16K => M2Benchmark::M3TranslationMemory16K,
+        };
+        let native = run_m3_case_subprocess(
+            &result_dir,
+            &native_benchmark,
+            input,
+            samples,
+            warmup,
+            "native",
+        )?;
+        let translated_measurement = run_m3_case_subprocess(
+            &result_dir,
+            &translated_benchmark,
+            input,
+            samples,
+            warmup,
+            "translated",
+        )?;
+        reports.push(M3PairRecord {
+            workload: workload.to_string(),
+            native_case: native_benchmark.label(),
+            translated_case: translated_benchmark.label(),
+            translation_time_ns,
+            pvm_instructions: translated.pvm_instruction_count,
+            translated_instructions: translated.translated_instruction_count(),
+            expansion_ratio: translated.expansion_ratio(),
+            native_prove_ns: native.prove_ns,
+            translated_prove_ns: translated_measurement.prove_ns,
+            prove_overhead_ratio: ratio(translated_measurement.prove_ns, native.prove_ns),
+            native_peak_rss_bytes: native.peak_rss_bytes,
+            translated_peak_rss_bytes: translated_measurement.peak_rss_bytes,
+            rss_overhead_ratio: ratio_u64(
+                translated_measurement.peak_rss_bytes,
+                native.peak_rss_bytes,
+            ),
+            native_proof_bytes: native.proof_bytes,
+            translated_proof_bytes: translated_measurement.proof_bytes,
+            native_output_hex: native.output_hex,
+            translated_output_hex: translated_measurement.output_hex,
+            native_verified: native.verified,
+            translated_verified: translated_measurement.verified,
+            error: native.error.or(translated_measurement.error),
+        });
+    }
+    let report = M3BenchmarkReport {
+        schema_version: "m3-paired-v1".to_string(),
+        jambda_revision: JAMBDA_REVISION.to_string(),
+        openvm_version: zk_jam_openvm_backend::OPENVM_VERSION.to_string(),
+        openvm_revision: zk_jam_openvm_backend::OPENVM_REVISION.to_string(),
+        backend: "cpu".to_string(),
+        samples,
+        warmup,
+        complete: reports.iter().all(|pair| {
+            pair.error.is_none()
+                && pair.native_verified
+                && pair.translated_verified
+                && pair.native_output_hex == pair.translated_output_hex
+        }),
+        pairs: reports,
+    };
+    write_json(result_dir.join("m3-benchmark.json"), &report)?;
+    fs::write(result_dir.join("m3-benchmark.csv"), render_m3_csv(&report))?;
+    fs::write(
+        result_dir.join("m3-benchmark.md"),
+        render_m3_report(&report, started.elapsed().as_nanos()),
+    )?;
+    Ok(report)
+}
+
+fn run_m3_case_subprocess(
+    result_dir: &Path,
+    benchmark: &M2Benchmark,
+    input: M2Input,
+    samples: usize,
+    warmup: usize,
+    label: &str,
+) -> Result<M3CaseMeasurement> {
+    let output = result_dir.join(format!(".m3-worker-{label}.json"));
+    let executable = env::current_exe().wrap_err("locate M3 benchmark worker")?;
+    let benchmark_name = benchmark.label();
+    let a = input.a.to_string();
+    let b = input.b.to_string();
+    let samples = samples.to_string();
+    let warmup = warmup.to_string();
+    let output_text = output
+        .to_str()
+        .ok_or_else(|| eyre!("invalid M3 worker output path"))?;
+    let status = Command::new(executable)
+        .args([
+            "__m3-worker",
+            "--benchmark",
+            &benchmark_name,
+            "--a",
+            &a,
+            "--b",
+            &b,
+            "--samples",
+            &samples,
+            "--warmup",
+            &warmup,
+            "--output",
+            output_text,
+        ])
+        .status()
+        .wrap_err("spawn M3 benchmark worker")?;
+    if !status.success() {
+        return Err(eyre!("M3 benchmark worker failed for {label}"));
+    }
+    let measurement = read_json(&output)?;
+    fs::remove_file(output)?;
+    Ok(measurement)
+}
+
+pub fn run_m3_worker(
+    benchmark: &str,
+    a: u32,
+    b: u32,
+    samples: usize,
+    warmup: usize,
+    output: &Path,
+) -> Result<()> {
+    let benchmark = match benchmark {
+        "arithmetic" => M2Benchmark::Arithmetic,
+        "branch" => M2Benchmark::Branch,
+        "memory-16384" => M2Benchmark::Memory { bytes: 16 * 1024 },
+        "m3-translation-arithmetic" => M2Benchmark::M3TranslationArithmetic,
+        "m3-translation-branch-true" => M2Benchmark::M3TranslationBranchTrue,
+        "m3-translation-memory-16384" => M2Benchmark::M3TranslationMemory16K,
+        other => return Err(eyre!("unknown M3 benchmark {other}")),
+    };
+    let input = M2Input { a, b };
+    let backend = OpenVmBackend;
+    let prepared = backend.prepare(backend.program(benchmark.clone())?)?;
+    for _ in 0..warmup {
+        backend.execute_prepared(&prepared, input)?;
+    }
+    let mut prove_times = Vec::with_capacity(samples);
+    let mut output_hex = None;
+    let mut proof_bytes = None;
+    let mut verified = true;
+    let mut error = None;
+    for _ in 0..samples {
+        match backend.execute_prepared(&prepared, input) {
+            Ok(value) => output_hex = Some(hex(&value.public_output)),
+            Err(value) => error = Some(value.to_string()),
+        }
+        match backend.prove_prepared(&prepared, input) {
+            Ok(proof) => {
+                prove_times.push(proof.prove_time_ns);
+                proof_bytes = Some(proof.proof_payload_size_bytes());
+                if proof.verify(&input.context_hash(&benchmark)).is_err() {
+                    verified = false;
+                }
+            }
+            Err(value) => error = Some(value.to_string()),
+        }
+    }
+    write_json(
+        output.to_path_buf(),
+        &M3CaseMeasurement {
+            prove_ns: (!prove_times.is_empty()).then(|| median_u128(&prove_times)),
+            proof_bytes,
+            output_hex,
+            verified,
+            peak_rss_bytes: peak_rss_bytes(),
+            error,
+        },
+    )
+}
+
+fn median_u128(values: &[u128]) -> u128 {
+    let mut values = values.to_vec();
+    values.sort_unstable();
+    values[(values.len() - 1) / 2]
+}
+
+fn ratio(numerator: Option<u128>, denominator: Option<u128>) -> Option<f64> {
+    Some(numerator? as f64 / denominator? as f64)
+}
+
+fn ratio_u64(numerator: Option<u64>, denominator: Option<u64>) -> Option<f64> {
+    Some(numerator? as f64 / denominator? as f64)
+}
+
+fn render_m3_csv(report: &M3BenchmarkReport) -> String {
+    let mut csv = String::from("workload,native_case,translated_case,translation_ms,pvm_instructions,translated_instructions,expansion_ratio,native_prove_ms,translated_prove_ms,prove_overhead_ratio,native_proof_bytes,translated_proof_bytes,complete\n");
+    for pair in &report.pairs {
+        csv.push_str(&format!(
+            "{},{},{},{:.3},{},{},{:.3},{},{},{},{},{},{}\n",
+            pair.workload,
+            pair.native_case,
+            pair.translated_case,
+            pair.translation_time_ns as f64 / 1e6,
+            pair.pvm_instructions,
+            pair.translated_instructions,
+            pair.expansion_ratio,
+            pair.native_prove_ns
+                .map_or(String::new(), |v| format!("{:.3}", v as f64 / 1e6)),
+            pair.translated_prove_ns
+                .map_or(String::new(), |v| format!("{:.3}", v as f64 / 1e6)),
+            pair.prove_overhead_ratio
+                .map_or(String::new(), |v| format!("{v:.4}")),
+            pair.native_proof_bytes
+                .map_or(String::new(), |v| v.to_string()),
+            pair.translated_proof_bytes
+                .map_or(String::new(), |v| v.to_string()),
+            pair.error.is_none() && pair.native_verified && pair.translated_verified,
+        ));
+    }
+    csv
+}
+
+fn render_m3_report(report: &M3BenchmarkReport, elapsed_ns: u128) -> String {
+    let mut output = format!("# ZK-JAM M3 PVM Translation Benchmark\n\n- Jambda revision: `{}`\n- OpenVM: `{}` at `{}`\n- Samples: {} measured, {} warmup\n- Complete: `{}`\n- Collection time: {}\n\n", report.jambda_revision, report.openvm_version, report.openvm_revision, report.samples, report.warmup, report.complete, human_duration_value(elapsed_ns as f64));
+    output.push_str("| Case | Native prove | PVM→OpenVM prove | Overhead | Translation | Expansion | RSS | Proof bytes |\n|---|---:|---:|---:|---:|---:|---:|---:|\n");
+    for pair in &report.pairs {
+        let format_ms = |value: Option<u128>| {
+            value.map_or_else(
+                || "n/a".to_string(),
+                |v| format!("{:.3} ms", v as f64 / 1e6),
+            )
+        };
+        output.push_str(&format!(
+            "| {} | {} | {} | {} | {:.3} ms | {:.3}x | {} / {} | {} / {} |\n",
+            pair.workload,
+            format_ms(pair.native_prove_ns),
+            format_ms(pair.translated_prove_ns),
+            pair.prove_overhead_ratio
+                .map_or_else(|| "n/a".to_string(), |v| format!("{:.2}x", v)),
+            pair.translation_time_ns as f64 / 1e6,
+            pair.expansion_ratio,
+            pair.native_peak_rss_bytes
+                .map_or_else(|| "n/a".to_string(), |v| human_bytes(Some(v as f64))),
+            pair.translated_peak_rss_bytes
+                .map_or_else(|| "n/a".to_string(), |v| human_bytes(Some(v as f64))),
+            pair.native_proof_bytes
+                .map_or_else(|| "n/a".to_string(), |v| v.to_string()),
+            pair.translated_proof_bytes
+                .map_or_else(|| "n/a".to_string(), |v| v.to_string())
+        ));
+    }
+    output.push_str("\nEach native/translated case is executed and proved in its own subprocess with the same OpenVM configuration; this makes the RSS values case-scoped. M3 supports only the three static normalized workloads (arithmetic, branch-true, and 16 KiB memory); Host Calls, GAS, sub-VM, and Refine are intentionally outside this milestone.\n");
+    output
 }
 
 pub fn run_worker(
