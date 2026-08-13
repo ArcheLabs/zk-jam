@@ -1,0 +1,101 @@
+name: Benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      milestone:
+        description: Benchmark milestone
+        required: true
+        default: m2
+        type: choice
+        options:
+          - m2
+          - m3
+      samples:
+        description: Measured samples per case
+        required: true
+        default: "5"
+        type: string
+      warmup:
+        description: Excluded warmup samples per case
+        required: true
+        default: "1"
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  OPENVM_RUST_TOOLCHAIN: nightly-2026-01-18
+
+jobs:
+  m2:
+    if: inputs.milestone == 'm2'
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install pinned OpenVM guest toolchain
+        run: rustup toolchain install nightly-2026-01-18 --profile minimal --component rust-src
+      - name: Validate benchmark inputs
+        env:
+          SAMPLES: ${{ inputs.samples }}
+          WARMUP: ${{ inputs.warmup }}
+        run: |
+          if ! [[ "$SAMPLES" =~ ^[1-9][0-9]*$ ]]; then
+            echo "samples must be a positive integer" >&2
+            exit 1
+          fi
+          if ! [[ "$WARMUP" =~ ^[0-9]+$ ]]; then
+            echo "warmup must be a non-negative integer" >&2
+            exit 1
+          fi
+      - name: Build release binary
+        run: cargo build --release -p zk-jam
+      - name: Run OpenVM proof and tamper acceptance test
+        run: cargo test -p zk-jam-openvm-backend m2_proof_round_trip_and_tamper_matrix --release -- --ignored --nocapture
+      - name: Run complete M2 benchmark
+        env:
+          SAMPLES: ${{ inputs.samples }}
+          WARMUP: ${{ inputs.warmup }}
+        run: |
+          cargo run --release -p zk-jam -- \
+            bench m2 \
+            --backend cpu \
+            --samples "$SAMPLES" \
+            --warmup "$WARMUP" \
+            --output benchmarks/results
+      - name: Locate benchmark result
+        id: result
+        run: |
+          result_dir="$(find benchmarks/results -mindepth 1 -maxdepth 1 -type d | sort | tail -n 1)"
+          test -n "$result_dir"
+          echo "dir=$result_dir" >> "$GITHUB_OUTPUT"
+      - name: Upload benchmark artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: m2-benchmark-${{ github.run_id }}
+          if-no-files-found: error
+          path: |
+            ${{ steps.result.outputs.dir }}/environment.json
+            ${{ steps.result.outputs.dir }}/runs.jsonl
+            ${{ steps.result.outputs.dir }}/summary.json
+            ${{ steps.result.outputs.dir }}/summary.csv
+            ${{ steps.result.outputs.dir }}/report.md
+      - name: Publish report to job summary
+        run: cat "${{ steps.result.outputs.dir }}/report.md" >> "$GITHUB_STEP_SUMMARY"
+      - name: Enforce publication readiness
+        run: |
+          test "$(jq -r '.cases | length' "${{ steps.result.outputs.dir }}/summary.json")" = "7"
+          test "$(jq -r '.publication_ready' "${{ steps.result.outputs.dir }}/summary.json")" = "true"
+
+  m3:
+    if: inputs.milestone == 'm3'
+    runs-on: ubuntu-latest
+    steps:
+      - name: M3 dispatch placeholder
+        run: |
+          echo "M3 benchmark wiring belongs to work packages 2 and 3." >> "$GITHUB_STEP_SUMMARY"
+          echo "M3 is not implemented in the M2 finalization work package." >&2
+          exit 1

@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 pub const OPENVM_VERSION: &str = "2.0.1";
 pub const OPENVM_REVISION: &str = "b820b25baab6c5d9b055f64e0286b6b1058e707c";
 pub const OPENVM_BACKEND: &str = "cpu";
+pub const OPENVM_PINNED_GUEST_TOOLCHAIN: &str = "nightly-2026-01-18";
 pub const ARITHMETIC_FIXED_XOR: u32 = 0xA5A5_5A5A;
 
 type OpenVmSdk = Sdk;
@@ -93,6 +94,7 @@ pub struct OpenVmPreparedProgram {
     pub program: OpenVmProgramArtifact,
     pub keygen_time_ns: u128,
     sdk: OpenVmSdk,
+    agg_vk: OpenVmVerifyingKey,
 }
 
 /// Result of running one M2 program.
@@ -172,6 +174,11 @@ impl OpenVmProofArtifact {
 pub struct OpenVmBackend;
 
 impl OpenVmBackend {
+    /// Select the guest toolchain once in the parent process so workers inherit the exact value.
+    pub fn configure_guest_toolchain() -> String {
+        configure_guest_toolchain()
+    }
+
     pub fn info() -> OpenVmInfo {
         OpenVmInfo {
             version: OPENVM_VERSION.to_string(),
@@ -179,8 +186,7 @@ impl OpenVmBackend {
             backend: OPENVM_BACKEND.to_string(),
             security_bits: 100,
             emission_path: "B: RV32IM ELF -> official OpenVM transpiler -> VmExe".to_string(),
-            guest_toolchain: env::var("OPENVM_RUST_TOOLCHAIN")
-                .unwrap_or_else(|_| "OpenVM default nightly-2026-01-18".to_string()),
+            guest_toolchain: selected_guest_toolchain(),
         }
     }
 
@@ -229,11 +235,12 @@ impl OpenVmBackend {
         let sdk = sdk();
         let keygen_started = Instant::now();
         let _ = sdk.app_keygen();
-        let _ = sdk.agg_keygen();
+        let (_, agg_vk) = sdk.agg_keygen();
         Ok(OpenVmPreparedProgram {
             program,
             keygen_time_ns: keygen_started.elapsed().as_nanos(),
             sdk,
+            agg_vk,
         })
     }
 
@@ -312,7 +319,6 @@ impl OpenVmBackend {
         let versioned = VersionedVmStarkProof::new(proof)
             .map_err(|error| eyre!("encode OpenVM proof: {error}"))?;
         let context_hash = input.context_hash(&prepared.program.benchmark);
-        let (_, agg_vk) = prepared.sdk.agg_keygen();
         Ok(OpenVmProofArtifact {
             benchmark: prepared.program.benchmark.clone(),
             openvm_version: OPENVM_VERSION.to_string(),
@@ -325,7 +331,7 @@ impl OpenVmBackend {
             public_output,
             proof: versioned,
             baseline: baseline.into(),
-            agg_vk,
+            agg_vk: prepared.agg_vk.clone(),
         })
     }
 
@@ -397,22 +403,47 @@ fn guest_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("guests/m2")
 }
 
-fn configure_guest_toolchain() {
-    if env::var_os("OPENVM_RUST_TOOLCHAIN").is_some() {
-        return;
+fn selected_guest_toolchain() -> String {
+    env::var("OPENVM_RUST_TOOLCHAIN")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| OPENVM_PINNED_GUEST_TOOLCHAIN.to_string())
+}
+
+fn configure_guest_toolchain() -> String {
+    if let Ok(configured) = env::var("OPENVM_RUST_TOOLCHAIN") {
+        if !configured.trim().is_empty() {
+            return configured;
+        }
     }
-    let Ok(output) = Command::new("rustup").args(["toolchain", "list"]).output() else {
-        return;
-    };
-    if output.status.success()
-        && String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .any(|line| line.starts_with("nightly"))
+    let installed = Command::new("rustup")
+        .args(["toolchain", "list"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
+        .unwrap_or_default();
+    let selected = select_guest_toolchain(&installed);
+    env::set_var("OPENVM_RUST_TOOLCHAIN", selected);
+    selected.to_string()
+}
+
+fn select_guest_toolchain(installed: &str) -> &'static str {
+    if installed
+        .lines()
+        .any(|line| line.starts_with(OPENVM_PINNED_GUEST_TOOLCHAIN))
     {
-        // The OpenVM default nightly is not installed in every environment. The generic nightly
-        // toolchain is used only as a local fallback; callers can pin an exact toolchain through
-        // OPENVM_RUST_TOOLCHAIN and the selected value is recorded in benchmark environment.json.
-        env::set_var("OPENVM_RUST_TOOLCHAIN", "nightly");
+        OPENVM_PINNED_GUEST_TOOLCHAIN
+    } else if installed.lines().any(|line| {
+        line.starts_with("nightly-x86_64")
+            || line.starts_with("nightly-aarch64")
+            || line.trim() == "nightly"
+    }) {
+        // Generic nightly is a development-only fallback. Publication readiness rejects it.
+        "nightly"
+    } else {
+        // Let rustup/OpenVM install the pinned toolchain when no usable nightly exists locally.
+        OPENVM_PINNED_GUEST_TOOLCHAIN
     }
 }
 
@@ -460,6 +491,20 @@ mod tests {
         assert_ne!(
             M2Input::arithmetic(1, 2).context_hash(&benchmark),
             M2Input::arithmetic(1, 3).context_hash(&benchmark)
+        );
+    }
+
+    #[test]
+    fn guest_toolchain_selection_prefers_the_pin() {
+        assert_eq!(
+            select_guest_toolchain(
+                "nightly-x86_64-unknown-linux-gnu\nnightly-2026-01-18-x86_64-unknown-linux-gnu\n"
+            ),
+            OPENVM_PINNED_GUEST_TOOLCHAIN
+        );
+        assert_eq!(
+            select_guest_toolchain("nightly-x86_64-unknown-linux-gnu\n"),
+            "nightly"
         );
     }
 

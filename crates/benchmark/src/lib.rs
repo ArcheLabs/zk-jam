@@ -10,7 +10,9 @@ use std::{
 
 use eyre::{eyre, Result, WrapErr};
 use serde::{Deserialize, Serialize};
-use zk_jam_openvm_backend::{M2Benchmark, M2Input, OpenVmBackend, OpenVmPreparedProgram};
+use zk_jam_openvm_backend::{
+    M2Benchmark, M2Input, OpenVmBackend, OpenVmPreparedProgram, OPENVM_PINNED_GUEST_TOOLCHAIN,
+};
 
 pub use zk_jam_refine_interface::RefineCaseV1;
 
@@ -64,7 +66,6 @@ pub struct RunRecord {
     pub artifact_size_bytes: Option<usize>,
     pub serialized_executable_size_bytes: Option<usize>,
     pub estimated_executable_size_bytes: Option<usize>,
-    pub peak_rss_bytes: Option<u64>,
     pub openvm_metrics: BTreeMap<String, serde_json::Value>,
     pub public_output_hex: Option<String>,
     pub error: Option<String>,
@@ -91,7 +92,8 @@ pub struct BenchmarkCaseSummary {
     pub prove_time_ns: Option<MetricSummary>,
     pub verify_time_ns: Option<MetricSummary>,
     pub total_time_ns: Option<MetricSummary>,
-    pub peak_rss_bytes: Option<MetricSummary>,
+    /// One high-water mark for the isolated process that ran this entire case.
+    pub peak_rss_bytes: Option<u64>,
     pub proof_payload_size_bytes: Option<MetricSummary>,
     pub artifact_size_bytes: Option<MetricSummary>,
     pub serialized_executable_size_bytes: Option<MetricSummary>,
@@ -141,6 +143,7 @@ pub struct BenchmarkRun {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct CaseWorkerOutput {
     records: Vec<RunRecord>,
+    peak_rss_bytes: Option<u64>,
 }
 
 #[derive(Clone, Debug)]
@@ -216,11 +219,15 @@ pub fn run_m2(
             "refusing to overwrite existing benchmark run {run_id}"
         ));
     }
-    fs::create_dir_all(result_dir.join("artifacts"))?;
+    // Capture repository state and resolve the guest toolchain before creating result files.
+    // Workers inherit OPENVM_RUST_TOOLCHAIN from this parent process.
+    OpenVmBackend::configure_guest_toolchain();
     let environment = environment_report(&run_id, backend_name)?;
+    fs::create_dir_all(result_dir.join("artifacts"))?;
     write_json(result_dir.join("environment.json"), &environment)?;
 
     let mut records = Vec::new();
+    let mut case_peak_rss = BTreeMap::new();
     for spec in &cases {
         let worker_path = result_dir.join(format!(
             ".worker-{}-{}.json",
@@ -261,6 +268,10 @@ pub fn run_m2(
         }
         let worker: CaseWorkerOutput = read_json(&worker_path)?;
         fs::remove_file(worker_path)?;
+        case_peak_rss.insert(
+            (spec.benchmark.name().to_string(), spec.case.clone()),
+            worker.peak_rss_bytes,
+        );
         records.extend(worker.records.into_iter().map(|mut record| {
             record.run_id = run_id.clone();
             record
@@ -280,6 +291,7 @@ pub fn run_m2(
         &environment,
         &options,
         cases.len(),
+        &case_peak_rss,
     );
     write_json(result_dir.join("summary.json"), &summary)?;
     write_csv(result_dir.join("summary.csv"), &summary)?;
@@ -327,11 +339,13 @@ pub fn run_worker(
     for index in 0..samples {
         records.push(measure_sample(&backend, &prepared, &spec, index, false)?);
     }
-    let peak_rss = peak_rss_bytes();
-    for record in &mut records {
-        record.peak_rss_bytes = peak_rss;
-    }
-    write_json(output.to_path_buf(), &CaseWorkerOutput { records })
+    write_json(
+        output.to_path_buf(),
+        &CaseWorkerOutput {
+            records,
+            peak_rss_bytes: peak_rss_bytes(),
+        },
+    )
 }
 
 fn measure_sample(
@@ -362,7 +376,6 @@ fn measure_sample(
         artifact_size_bytes: None,
         serialized_executable_size_bytes: Some(prepared.program.serialized_executable_size_bytes),
         estimated_executable_size_bytes: Some(prepared.program.executable_bytes),
-        peak_rss_bytes: None,
         openvm_metrics: BTreeMap::new(),
         public_output_hex: None,
         error: None,
@@ -400,6 +413,7 @@ fn summarize(
     environment: &EnvironmentReport,
     options: &BenchmarkOptions,
     case_count: usize,
+    case_peak_rss: &BTreeMap<(String, String), Option<u64>>,
 ) -> BenchmarkSummary {
     let mut grouped: BTreeMap<(String, String), Vec<&RunRecord>> = BTreeMap::new();
     for record in records {
@@ -410,7 +424,13 @@ fn summarize(
     }
     let cases = grouped
         .into_iter()
-        .map(|((benchmark, case), records)| summarize_case(&benchmark, &case, &records))
+        .map(|((benchmark, case), records)| {
+            let peak_rss_bytes = case_peak_rss
+                .get(&(benchmark.clone(), case.clone()))
+                .copied()
+                .flatten();
+            summarize_case(&benchmark, &case, &records, peak_rss_bytes)
+        })
         .collect::<Vec<_>>();
     let warmup_samples = records.iter().filter(|record| record.warmup).count();
     let measured_samples = records.iter().filter(|record| !record.warmup).count();
@@ -427,6 +447,11 @@ fn summarize(
     }
     if environment.openvm_revision != "b820b25baab6c5d9b055f64e0286b6b1058e707c" {
         reasons.push("unexpected OpenVM revision".to_string());
+    }
+    if environment.guest_toolchain != OPENVM_PINNED_GUEST_TOOLCHAIN {
+        reasons.push(format!(
+            "guest toolchain is not pinned to {OPENVM_PINNED_GUEST_TOOLCHAIN}"
+        ));
     }
     if environment.security_bits != 100 {
         reasons.push("unexpected security configuration".to_string());
@@ -465,7 +490,12 @@ fn summarize(
     }
 }
 
-fn summarize_case(benchmark: &str, case: &str, records: &[&RunRecord]) -> BenchmarkCaseSummary {
+fn summarize_case(
+    benchmark: &str,
+    case: &str,
+    records: &[&RunRecord],
+    peak_rss_bytes: Option<u64>,
+) -> BenchmarkCaseSummary {
     let measured = records
         .iter()
         .filter(|record| !record.warmup)
@@ -502,12 +532,7 @@ fn summarize_case(benchmark: &str, case: &str, records: &[&RunRecord]) -> Benchm
                 .collect(),
         ),
         total_time_ns: metric(successful.iter().map(|r| r.total_time_ns as f64).collect()),
-        peak_rss_bytes: metric(
-            successful
-                .iter()
-                .filter_map(|r| r.peak_rss_bytes.map(|v| v as f64))
-                .collect(),
-        ),
+        peak_rss_bytes,
         proof_payload_size_bytes: metric(
             successful
                 .iter()
@@ -585,7 +610,7 @@ fn render_report(environment: &EnvironmentReport, summary: &BenchmarkSummary) ->
     report.push_str("## Environment\n\n");
     report.push_str(&format!("- Run ID: {}\n- Git commit: {} (dirty: {})\n- OS/arch: {}/{}\n- CPU: {}\n- Kernel: {}\n- Rust/Cargo: {} / {}\n- Build profile: {}\n- RSS: {}; scope {}; includes keygen {}\n\n", summary.run_id, environment.git_commit.as_deref().unwrap_or("null"), environment.git_dirty, environment.os, environment.arch, environment.cpu.as_deref().unwrap_or("null"), environment.kernel.as_deref().unwrap_or("null"), environment.rustc_version.as_deref().unwrap_or("null"), environment.cargo_version.as_deref().unwrap_or("null"), environment.build_profile, environment.rss_method, environment.rss_scope, environment.rss_includes_keygen));
     report.push_str("## OpenVM Configuration\n\n");
-    report.push_str(&format!("- Version: {}\n- Revision: {}\n- Backend: {}\n- Security target: {} bits\n- Config hash: {}\n- Emission: RV32IM ELF -> official OpenVM transpiler -> VmExe\n\n", environment.openvm_version, environment.openvm_revision, environment.backend, environment.security_bits, environment.openvm_config_hash.as_deref().unwrap_or("null")));
+    report.push_str(&format!("- Version: {}\n- Revision: {}\n- Backend: {}\n- Security target: {} bits\n- Guest toolchain: {}\n- Config hash: {}\n- Emission: RV32IM ELF -> official OpenVM transpiler -> VmExe\n\n", environment.openvm_version, environment.openvm_revision, environment.backend, environment.security_bits, environment.guest_toolchain, environment.openvm_config_hash.as_deref().unwrap_or("null")));
     report.push_str(
         "## One-time Setup\n\n| Test | Build | Transpile | Keygen |\n|---|---:|---:|---:|\n",
     );
@@ -611,7 +636,7 @@ fn render_report(environment: &EnvironmentReport, summary: &BenchmarkSummary) ->
             metric_duration(&case.prove_time_ns),
             metric_duration(&case.verify_time_ns),
             metric_duration(&case.total_time_ns),
-            metric_bytes(&case.peak_rss_bytes),
+            human_bytes(case.peak_rss_bytes.map(|value| value as f64)),
             metric_bytes(&case.proof_payload_size_bytes),
             metric_bytes(&case.artifact_size_bytes),
             metric_bytes(&case.serialized_executable_size_bytes)
@@ -628,12 +653,12 @@ fn render_report(environment: &EnvironmentReport, summary: &BenchmarkSummary) ->
 }
 
 fn write_csv(path: PathBuf, summary: &BenchmarkSummary) -> Result<()> {
-    let mut csv = String::from("run_id,benchmark,case,backend,samples,build_ms,transpile_ms,keygen_ms,execute_median_ms,prove_median_ms,verify_median_ms,prove_min_ms,prove_max_ms,prove_p95_ms,peak_rss_median_mib,peak_rss_max_mib,proof_payload_bytes,artifact_bytes,executable_bytes,publication_ready\n");
+    let mut csv = String::from("run_id,benchmark,case,backend,samples,build_ms,transpile_ms,keygen_ms,execute_median_ms,prove_median_ms,verify_median_ms,prove_min_ms,prove_max_ms,prove_p95_ms,peak_rss_mib,proof_payload_bytes,artifact_bytes,executable_bytes,publication_ready\n");
     for case in &summary.cases {
         let field =
             |value: Option<f64>| value.map_or_else(String::new, |value| format!("{value:.3}"));
         csv.push_str(&format!(
-            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
+            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
             summary.run_id,
             case.benchmark,
             case.case,
@@ -678,18 +703,7 @@ fn write_csv(path: PathBuf, summary: &BenchmarkSummary) -> Result<()> {
                     .and_then(|v| v.p95)
                     .map(|v| v / 1e6)
             ),
-            field(
-                case.peak_rss_bytes
-                    .as_ref()
-                    .and_then(|v| v.median)
-                    .map(|v| v / 1024.0 / 1024.0)
-            ),
-            field(
-                case.peak_rss_bytes
-                    .as_ref()
-                    .and_then(|v| v.max)
-                    .map(|v| v / 1024.0 / 1024.0)
-            ),
+            field(case.peak_rss_bytes.map(|v| v as f64 / 1024.0 / 1024.0)),
             field(
                 case.proof_payload_size_bytes
                     .as_ref()
@@ -729,6 +743,9 @@ fn metric_duration(metric: &Option<MetricSummary>) -> String {
 }
 fn metric_bytes(metric: &Option<MetricSummary>) -> String {
     metric_display(metric, human_bytes_value)
+}
+fn human_bytes(value: Option<f64>) -> String {
+    value.map_or_else(|| "n/a".to_string(), human_bytes_value)
 }
 fn human_duration(value: Option<f64>) -> String {
     value.map_or_else(|| "n/a".to_string(), human_duration_value)
@@ -913,7 +930,7 @@ mod tests {
             openvm_revision: "b820b25baab6c5d9b055f64e0286b6b1058e707c".to_string(),
             security_bits: 100,
             openvm_config_hash: Some("hash".to_string()),
-            guest_toolchain: "nightly".to_string(),
+            guest_toolchain: OPENVM_PINNED_GUEST_TOOLCHAIN.to_string(),
             rss_scope: "benchmark-case".to_string(),
             rss_includes_keygen: true,
             rss_method: "proc-vmhwm in isolated child process".to_string(),
@@ -941,7 +958,6 @@ mod tests {
             artifact_size_bytes: success.then_some(2_000 + sample_index),
             serialized_executable_size_bytes: Some(3_000),
             estimated_executable_size_bytes: Some(4_000),
-            peak_rss_bytes: success.then_some(5_000),
             openvm_metrics: BTreeMap::new(),
             public_output_hex: success.then(|| "00".to_string()),
             error: (!success).then(|| "failed".to_string()),
@@ -979,8 +995,10 @@ mod tests {
             .chain(std::iter::once(test_record(0, true, true)))
             .collect::<Vec<_>>();
         let refs = records.iter().collect::<Vec<_>>();
-        let summary = summarize_case("arithmetic", "default", &refs);
+        let summary = summarize_case("arithmetic", "default", &refs, Some(5_000));
         assert_eq!(summary.samples, 5);
+        assert_eq!(summary.peak_rss_bytes, Some(5_000));
+        assert!(serde_json::to_value(&summary).unwrap()["peak_rss_bytes"].is_number());
         assert_eq!(
             summary.proof_payload_size_bytes.unwrap().median,
             Some(1_002.0)
@@ -1000,6 +1018,10 @@ mod tests {
             &test_environment(true),
             &BenchmarkOptions::default(),
             MANDATORY_CASES,
+            &BTreeMap::from([(
+                ("arithmetic".to_string(), "default".to_string()),
+                Some(5_000),
+            )]),
         );
         assert!(!summary.publication_ready);
         assert!(summary
@@ -1013,12 +1035,38 @@ mod tests {
     }
 
     #[test]
+    fn publication_readiness_rejects_unpinned_guest_toolchain() {
+        let records = (0..5)
+            .map(|index| test_record(index, false, true))
+            .collect::<Vec<_>>();
+        let mut environment = test_environment(false);
+        environment.guest_toolchain = "nightly".to_string();
+        let summary = summarize(
+            "run",
+            "cpu",
+            &records,
+            &environment,
+            &BenchmarkOptions::default(),
+            MANDATORY_CASES,
+            &BTreeMap::from([(
+                ("arithmetic".to_string(), "default".to_string()),
+                Some(5_000),
+            )]),
+        );
+        assert!(!summary.publication_ready);
+        assert!(summary
+            .publication_reasons
+            .iter()
+            .any(|reason| reason.contains(OPENVM_PINNED_GUEST_TOOLCHAIN)));
+    }
+
+    #[test]
     fn report_declares_rss_scope_and_size_definitions() {
         let records = (0..5)
             .map(|index| test_record(index, false, true))
             .collect::<Vec<_>>();
         let refs = records.iter().collect::<Vec<_>>();
-        let case = summarize_case("arithmetic", "default", &refs);
+        let case = summarize_case("arithmetic", "default", &refs, Some(5_000));
         let summary = BenchmarkSummary {
             schema_version: "summary-v2".to_string(),
             run_id: "run".to_string(),
@@ -1052,7 +1100,10 @@ mod tests {
         };
         let path = std::env::temp_dir().join(format!("zk-jam-csv-{}.csv", std::process::id()));
         write_csv(path.clone(), &summary).unwrap();
-        assert_eq!(fs::read_to_string(&path).unwrap().lines().count(), 1);
+        let csv = fs::read_to_string(&path).unwrap();
+        assert_eq!(csv.lines().count(), 1);
+        assert!(csv.contains("peak_rss_mib"));
+        assert!(!csv.contains("peak_rss_median_mib"));
         fs::remove_file(path).unwrap();
     }
 }
