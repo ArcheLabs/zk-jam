@@ -13,7 +13,10 @@ use serde::{Deserialize, Serialize};
 use zk_jam_openvm_backend::{
     M2Benchmark, M2Input, OpenVmBackend, OpenVmPreparedProgram, OPENVM_PINNED_GUEST_TOOLCHAIN,
 };
-use zk_jam_translation::{translate, workload_program, M3Workload, JAMBDA_REVISION};
+use zk_jam_translation::{translate_workload, workload_program, M3Workload, JAMBDA_REPOSITORY};
+
+mod m4;
+pub use m4::{run_m4, validate_m4_report, M4BenchmarkReport, M4CaseRecord};
 
 pub use zk_jam_refine_interface::RefineCaseV1;
 
@@ -47,14 +50,33 @@ pub struct M3PairRecord {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct M3BenchmarkReport {
     pub schema_version: String,
+    pub zk_jam_revision: String,
+    pub git_dirty: bool,
+    pub jambda_repository: String,
     pub jambda_revision: String,
+    pub jambda_provenance_verified: bool,
     pub openvm_version: String,
     pub openvm_revision: String,
+    pub guest_toolchain: String,
     pub backend: String,
     pub samples: usize,
     pub warmup: usize,
     pub pairs: Vec<M3PairRecord>,
     pub complete: bool,
+    pub publication_ready: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct JambdaManifest {
+    pub repository: String,
+    pub revision: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct JambdaProvenance {
+    pub repository: String,
+    pub revision: String,
+    pub verified: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -366,10 +388,23 @@ pub fn run_m2(
     })
 }
 
-pub fn run_m3(output_root: &Path, samples: usize, warmup: usize) -> Result<M3BenchmarkReport> {
+pub fn run_m3(
+    output_root: &Path,
+    samples: usize,
+    warmup: usize,
+    jambda_repo: &Path,
+) -> Result<M3BenchmarkReport> {
     if samples == 0 {
         return Err(eyre!("--samples must be at least 1"));
     }
+    let manifest_path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../integration/jambda-m3.json");
+    let provenance = verify_jambda_provenance(jambda_repo, &manifest_path)?;
+    let zk_jam_revision = git_commit().ok_or_else(|| eyre!("could not resolve zk-jam HEAD"))?;
+    let git_dirty = git_dirty();
+    let openvm_version = zk_jam_openvm_backend::OPENVM_VERSION.to_string();
+    let openvm_revision = zk_jam_openvm_backend::OPENVM_REVISION.to_string();
+    let guest_toolchain = OPENVM_PINNED_GUEST_TOOLCHAIN.to_string();
     let started = Instant::now();
     let run_id = format!("{}_{}_m3", utc_run_stamp(), git_short());
     let result_dir = output_root.join(&run_id);
@@ -394,7 +429,7 @@ pub fn run_m3(output_root: &Path, samples: usize, warmup: usize) -> Result<M3Ben
     let mut reports = Vec::with_capacity(pairs.len());
     for (workload, native_benchmark, input) in pairs {
         let translation_started = Instant::now();
-        let translated = translate(workload, &workload_program(workload))?;
+        let translated = translate_workload(workload, &workload_program(workload))?;
         let translation_time_ns = translation_started.elapsed().as_nanos();
         let translated_benchmark = match workload {
             M3Workload::Arithmetic => M2Benchmark::M3TranslationArithmetic,
@@ -443,21 +478,31 @@ pub fn run_m3(output_root: &Path, samples: usize, warmup: usize) -> Result<M3Ben
             error: native.error.or(translated_measurement.error),
         });
     }
+    let complete = reports.iter().all(m3_pair_complete);
+    let publication_ready = m3_publication_ready(
+        complete,
+        provenance.verified,
+        git_dirty,
+        &openvm_version,
+        &openvm_revision,
+        &guest_toolchain,
+    );
     let report = M3BenchmarkReport {
-        schema_version: "m3-paired-v1".to_string(),
-        jambda_revision: JAMBDA_REVISION.to_string(),
-        openvm_version: zk_jam_openvm_backend::OPENVM_VERSION.to_string(),
-        openvm_revision: zk_jam_openvm_backend::OPENVM_REVISION.to_string(),
+        schema_version: "m3-paired-v2".to_string(),
+        zk_jam_revision,
+        git_dirty,
+        jambda_repository: provenance.repository,
+        jambda_revision: provenance.revision,
+        jambda_provenance_verified: provenance.verified,
+        openvm_version,
+        openvm_revision,
+        guest_toolchain,
         backend: "cpu".to_string(),
         samples,
         warmup,
-        complete: reports.iter().all(|pair| {
-            pair.error.is_none()
-                && pair.native_verified
-                && pair.translated_verified
-                && pair.native_output_hex == pair.translated_output_hex
-        }),
+        complete,
         pairs: reports,
+        publication_ready,
     };
     write_json(result_dir.join("m3-benchmark.json"), &report)?;
     fs::write(result_dir.join("m3-benchmark.csv"), render_m3_csv(&report))?;
@@ -466,6 +511,138 @@ pub fn run_m3(output_root: &Path, samples: usize, warmup: usize) -> Result<M3Ben
         render_m3_report(&report, started.elapsed().as_nanos()),
     )?;
     Ok(report)
+}
+
+pub fn m3_pair_complete(pair: &M3PairRecord) -> bool {
+    pair.error.is_none()
+        && pair.native_verified
+        && pair.translated_verified
+        && pair.native_output_hex == pair.translated_output_hex
+}
+
+fn m3_publication_ready(
+    complete: bool,
+    provenance_verified: bool,
+    git_dirty: bool,
+    openvm_version: &str,
+    openvm_revision: &str,
+    guest_toolchain: &str,
+) -> bool {
+    complete
+        && provenance_verified
+        && !git_dirty
+        && openvm_version == zk_jam_openvm_backend::OPENVM_VERSION
+        && openvm_revision == zk_jam_openvm_backend::OPENVM_REVISION
+        && guest_toolchain == OPENVM_PINNED_GUEST_TOOLCHAIN
+}
+
+pub fn verify_jambda_provenance(repo: &Path, manifest_path: &Path) -> Result<JambdaProvenance> {
+    if !repo.is_dir() {
+        return Err(eyre!("Jambda checkout is missing: {}", repo.display()));
+    }
+    let manifest: JambdaManifest =
+        read_json(manifest_path).wrap_err("read Jambda provenance manifest")?;
+    validate_jambda_manifest(&manifest)?;
+    let actual_revision = git_in(repo, &["rev-parse", "--verify", "HEAD"])?;
+    if actual_revision != manifest.revision {
+        return Err(eyre!(
+            "Jambda checkout HEAD does not match the pinned revision"
+        ));
+    }
+    let remote = git_in(repo, &["remote", "get-url", "origin"])?;
+    if github_repository_identity(&remote).as_deref() != Some(manifest.repository.as_str()) {
+        return Err(eyre!(
+            "Jambda checkout origin does not match the pinned repository"
+        ));
+    }
+    Ok(JambdaProvenance {
+        repository: manifest.repository,
+        revision: manifest.revision,
+        verified: true,
+    })
+}
+
+fn validate_jambda_manifest(manifest: &JambdaManifest) -> Result<()> {
+    if manifest.repository != JAMBDA_REPOSITORY {
+        return Err(eyre!(
+            "Jambda repository does not match the pinned identity"
+        ));
+    }
+    if !is_full_sha(&manifest.revision) {
+        return Err(eyre!(
+            "Jambda revision must be a 40-character hexadecimal SHA"
+        ));
+    }
+    Ok(())
+}
+
+pub fn validate_m3_report(report_path: &Path, schema_path: &Path) -> Result<()> {
+    let schema: serde_json::Value = read_json(schema_path).wrap_err("read M3 JSON Schema")?;
+    let report: serde_json::Value = read_json(report_path).wrap_err("read M3 benchmark report")?;
+    let validator = jsonschema::validator_for(&schema)
+        .map_err(|error| eyre!("compile M3 JSON Schema: {error}"))?;
+    let errors = validator
+        .iter_errors(&report)
+        .map(|error| format!("{} at {}", error, error.instance_path))
+        .collect::<Vec<_>>();
+    if errors.is_empty() {
+        let typed: M3BenchmarkReport = serde_json::from_value(report)
+            .wrap_err("decode M3 benchmark report after schema validation")?;
+        let complete = typed.pairs.len() == 3 && typed.pairs.iter().all(m3_pair_complete);
+        if typed.complete != complete {
+            return Err(eyre!(
+                "M3 report complete does not match pair completion semantics"
+            ));
+        }
+        let publication_ready = m3_publication_ready(
+            typed.complete,
+            typed.jambda_provenance_verified,
+            typed.git_dirty,
+            &typed.openvm_version,
+            &typed.openvm_revision,
+            &typed.guest_toolchain,
+        );
+        if typed.publication_ready != publication_ready {
+            return Err(eyre!(
+                "M3 report publication_ready does not match provenance, git, and pin semantics"
+            ));
+        }
+        return Ok(());
+    }
+    Err(eyre!(
+        "M3 benchmark report failed JSON Schema validation:\n{}",
+        errors.join("\n")
+    ))
+}
+
+fn git_in(repo: &Path, args: &[&str]) -> Result<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(args)
+        .output()
+        .wrap_err("run Jambda provenance git command")?;
+    if !output.status.success() {
+        return Err(eyre!("Jambda provenance git command failed"));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn github_repository_identity(remote: &str) -> Option<String> {
+    let value = remote.trim().trim_end_matches('/').trim_end_matches(".git");
+    let path = if let Some((_, path)) = value.split_once("git@github.com:") {
+        path
+    } else if let Some((_, path)) = value.split_once("github.com/") {
+        path
+    } else {
+        return None;
+    };
+    let mut parts = path.split('/');
+    Some(format!("{}/{}", parts.next()?, parts.next()?))
+}
+
+fn is_full_sha(value: &str) -> bool {
+    value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 fn run_m3_case_subprocess(
@@ -605,15 +782,15 @@ fn render_m3_csv(report: &M3BenchmarkReport) -> String {
                 .map_or(String::new(), |v| v.to_string()),
             pair.translated_proof_bytes
                 .map_or(String::new(), |v| v.to_string()),
-            pair.error.is_none() && pair.native_verified && pair.translated_verified,
+            m3_pair_complete(pair),
         ));
     }
     csv
 }
 
 fn render_m3_report(report: &M3BenchmarkReport, elapsed_ns: u128) -> String {
-    let mut output = format!("# ZK-JAM M3 PVM Translation Benchmark\n\n- Jambda revision: `{}`\n- OpenVM: `{}` at `{}`\n- Samples: {} measured, {} warmup\n- Complete: `{}`\n- Collection time: {}\n\n", report.jambda_revision, report.openvm_version, report.openvm_revision, report.samples, report.warmup, report.complete, human_duration_value(elapsed_ns as f64));
-    output.push_str("| Case | Native prove | PVM→OpenVM prove | Overhead | Translation | Expansion | RSS | Proof bytes |\n|---|---:|---:|---:|---:|---:|---:|---:|\n");
+    let mut output = format!("# ZK-JAM M3 PVM Translation Benchmark\n\n- ZK-JAM revision: `{}`\n- Git dirty: `{}`\n- Jambda: `{}`\n- Jambda revision: `{}`\n- Jambda provenance verified: `{}`\n- OpenVM: `{}` at `{}`\n- Guest toolchain: `{}`\n- Samples: `{}` measured, `{}` warmup\n- Complete: `{}`\n- Publication ready: `{}`\n- Collection time: {}\n\n", report.zk_jam_revision, report.git_dirty, report.jambda_repository, report.jambda_revision, report.jambda_provenance_verified, report.openvm_version, report.openvm_revision, report.guest_toolchain, report.samples, report.warmup, report.complete, report.publication_ready, human_duration_value(elapsed_ns as f64));
+    output.push_str("| Case | Native prove | PVM→OpenVM prove | Overhead | Translation | Expansion | RSS | Proof bytes | Complete |\n|---|---:|---:|---:|---:|---:|---:|---:|:---:|\n");
     for pair in &report.pairs {
         let format_ms = |value: Option<u128>| {
             value.map_or_else(
@@ -622,7 +799,7 @@ fn render_m3_report(report: &M3BenchmarkReport, elapsed_ns: u128) -> String {
             )
         };
         output.push_str(&format!(
-            "| {} | {} | {} | {} | {:.3} ms | {:.3}x | {} / {} | {} / {} |\n",
+            "| {} | {} | {} | {} | {:.3} ms | {:.3}x | {} / {} | {} / {} | {} |\n",
             pair.workload,
             format_ms(pair.native_prove_ns),
             format_ms(pair.translated_prove_ns),
@@ -637,10 +814,11 @@ fn render_m3_report(report: &M3BenchmarkReport, elapsed_ns: u128) -> String {
             pair.native_proof_bytes
                 .map_or_else(|| "n/a".to_string(), |v| v.to_string()),
             pair.translated_proof_bytes
-                .map_or_else(|| "n/a".to_string(), |v| v.to_string())
+                .map_or_else(|| "n/a".to_string(), |v| v.to_string()),
+            m3_pair_complete(pair)
         ));
     }
-    output.push_str("\nEach native/translated case is executed and proved in its own subprocess with the same OpenVM configuration; this makes the RSS values case-scoped. M3 supports only the three static normalized workloads (arithmetic, branch-true, and 16 KiB memory); Host Calls, GAS, sub-VM, and Refine are intentionally outside this milestone.\n");
+    output.push_str("\nM3 proves the checked-in statically emitted OpenVM guest programs corresponding to the three bounded translation workloads. It does not yet mechanically bind the `translate()` output to the OpenVM guest executable being proved. Each native/translated case is executed and proved in its own subprocess with the same OpenVM configuration; this makes the RSS values case-scoped. M3 supports only the three static normalized workloads (arithmetic, branch-true, and 16 KiB memory); Host Calls, GAS, sub-VM, and Refine are intentionally outside this milestone.\n");
     output
 }
 
@@ -1235,6 +1413,7 @@ fn hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zk_jam_translation::JAMBDA_REVISION;
 
     fn test_environment(dirty: bool) -> EnvironmentReport {
         EnvironmentReport {
@@ -1431,5 +1610,137 @@ mod tests {
         assert!(csv.contains("peak_rss_mib"));
         assert!(!csv.contains("peak_rss_median_mib"));
         fs::remove_file(path).unwrap();
+    }
+
+    fn m3_pair(native_output: &str, translated_output: &str) -> M3PairRecord {
+        M3PairRecord {
+            workload: "arithmetic".to_string(),
+            native_case: "arithmetic".to_string(),
+            translated_case: "m3-translation-arithmetic".to_string(),
+            translation_time_ns: 1,
+            pvm_instructions: 1,
+            translated_instructions: 1,
+            expansion_ratio: 1.0,
+            native_prove_ns: Some(1),
+            translated_prove_ns: Some(1),
+            prove_overhead_ratio: Some(1.0),
+            native_peak_rss_bytes: Some(1),
+            translated_peak_rss_bytes: Some(1),
+            rss_overhead_ratio: Some(1.0),
+            native_proof_bytes: Some(1),
+            translated_proof_bytes: Some(1),
+            native_output_hex: Some(native_output.to_string()),
+            translated_output_hex: Some(translated_output.to_string()),
+            native_verified: true,
+            translated_verified: true,
+            error: None,
+        }
+    }
+
+    fn m3_report() -> M3BenchmarkReport {
+        M3BenchmarkReport {
+            schema_version: "m3-paired-v2".to_string(),
+            zk_jam_revision: "91483b7".to_string() + &"0".repeat(33),
+            git_dirty: false,
+            jambda_repository: JAMBDA_REPOSITORY.to_string(),
+            jambda_revision: JAMBDA_REVISION.to_string(),
+            jambda_provenance_verified: true,
+            openvm_version: "2.0.1".to_string(),
+            openvm_revision: "b820b25baab6c5d9b055f64e0286b6b1058e707c".to_string(),
+            guest_toolchain: OPENVM_PINNED_GUEST_TOOLCHAIN.to_string(),
+            backend: "cpu".to_string(),
+            samples: 1,
+            warmup: 0,
+            pairs: vec![m3_pair("00", "00"); 3],
+            complete: true,
+            publication_ready: true,
+        }
+    }
+
+    #[test]
+    fn jambda_manifest_validation_is_strict() {
+        let valid = JambdaManifest {
+            repository: JAMBDA_REPOSITORY.to_string(),
+            revision: JAMBDA_REVISION.to_string(),
+        };
+        assert!(validate_jambda_manifest(&valid).is_ok());
+        assert!(validate_jambda_manifest(&JambdaManifest {
+            repository: "other/repo".to_string(),
+            ..valid.clone()
+        })
+        .is_err());
+        assert!(validate_jambda_manifest(&JambdaManifest {
+            revision: "short".to_string(),
+            ..valid.clone()
+        })
+        .is_err());
+        assert!(validate_jambda_manifest(&JambdaManifest {
+            revision: "g".repeat(40),
+            ..valid
+        })
+        .is_err());
+    }
+
+    #[test]
+    fn m3_pair_completion_requires_matching_outputs() {
+        assert!(m3_pair_complete(&m3_pair("00", "00")));
+        assert!(!m3_pair_complete(&m3_pair("00", "01")));
+        let mut native_failed = m3_pair("00", "00");
+        native_failed.native_verified = false;
+        assert!(!m3_pair_complete(&native_failed));
+        let mut translated_failed = m3_pair("00", "00");
+        translated_failed.translated_verified = false;
+        assert!(!m3_pair_complete(&translated_failed));
+        let mut worker_failed = m3_pair("00", "00");
+        worker_failed.error = Some("worker error".to_string());
+        assert!(!m3_pair_complete(&worker_failed));
+    }
+
+    #[test]
+    fn m3_publication_readiness_requires_all_pins_and_clean_git() {
+        let args = (
+            true,
+            true,
+            false,
+            "2.0.1",
+            "b820b25baab6c5d9b055f64e0286b6b1058e707c",
+            OPENVM_PINNED_GUEST_TOOLCHAIN,
+        );
+        assert!(m3_publication_ready(
+            args.0, args.1, args.2, args.3, args.4, args.5
+        ));
+        assert!(!m3_publication_ready(
+            true, false, false, args.3, args.4, args.5
+        ));
+        assert!(!m3_publication_ready(
+            true, true, true, args.3, args.4, args.5
+        ));
+        assert!(!m3_publication_ready(
+            false, true, false, args.3, args.4, args.5
+        ));
+    }
+
+    #[test]
+    fn m3_schema_accepts_report_and_rejects_missing_or_wrong_fields() {
+        let directory =
+            std::env::temp_dir().join(format!("zk-jam-m3-schema-{}", std::process::id()));
+        fs::create_dir_all(&directory).unwrap();
+        let report_path = directory.join("report.json");
+        let schema_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../benchmarks/schema/m3-paired-v2.schema.json");
+        let report = m3_report();
+        fs::write(&report_path, serde_json::to_vec(&report).unwrap()).unwrap();
+        assert!(validate_m3_report(&report_path, &schema_path).is_ok());
+
+        let mut missing = serde_json::to_value(&report).unwrap();
+        missing.as_object_mut().unwrap().remove("complete");
+        fs::write(&report_path, serde_json::to_vec(&missing).unwrap()).unwrap();
+        assert!(validate_m3_report(&report_path, &schema_path).is_err());
+
+        let mut wrong_type = serde_json::to_value(&report).unwrap();
+        wrong_type["samples"] = serde_json::Value::String("one".to_string());
+        fs::write(&report_path, serde_json::to_vec(&wrong_type).unwrap()).unwrap();
+        assert!(validate_m3_report(&report_path, &schema_path).is_err());
+        fs::remove_dir_all(directory).unwrap();
     }
 }

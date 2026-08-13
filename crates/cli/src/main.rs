@@ -3,7 +3,10 @@ use std::{
     path::{Path, PathBuf},
     process::ExitCode,
 };
-use zk_jam_benchmark::{report_run, run_m2, run_m3, run_m3_worker, run_worker, BenchmarkOptions};
+use zk_jam_benchmark::{
+    report_run, run_m2, run_m3, run_m3_worker, run_worker, validate_m3_report, validate_m4_report,
+    verify_jambda_provenance, BenchmarkOptions,
+};
 use zk_jam_openvm_backend::{M2Benchmark, M2Input, OpenVmBackend};
 use zk_jam_refine_interface::{
     CanonicalCodec, PvmBlockV1, PvmInstructionV1, PvmProgramV1, PvmTerminatorV1, RefineCaseV1,
@@ -20,7 +23,11 @@ fn usage() {
     eprintln!("       zk-jam openvm verify <artifact.json>");
     eprintln!("       zk-jam bench m2 --backend cpu [--benchmark arithmetic|branch|memory] [--samples N] [--warmup N] [--quick] [--output benchmarks/results]");
     eprintln!("       zk-jam bench report <run-id> [--output benchmarks/results]");
-    eprintln!("       zk-jam bench m3 [--samples N] [--warmup N] [--output benchmarks/results]");
+    eprintln!("       zk-jam bench verify-jambda --repo <checkout> [--manifest integration/jambda-m3.json]");
+    eprintln!("       zk-jam bench validate-m3 <report.json> [--schema schema.json]");
+    eprintln!("       zk-jam bench validate-m4 <report.json> [--schema schema.json]");
+    eprintln!("       zk-jam bench m3 --jambda-repo <checkout> [--samples N] [--warmup N] [--output benchmarks/results]");
+    eprintln!("       zk-jam bench m4 --jambda-repo <checkout> [--samples N] [--warmup N] [--output benchmarks/results]");
 }
 
 fn benchmark(name: &str) -> Result<(M2Benchmark, M2Input), Box<dyn std::error::Error>> {
@@ -157,10 +164,67 @@ fn bench_command(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
                 );
             print!("{}", report_run(&output, run_id)?);
         }
+        Some("validate-m3") => {
+            let report = PathBuf::from(args.get(2).ok_or("missing M3 report path")?);
+            let schema = args
+                .iter()
+                .position(|arg| arg == "--schema")
+                .and_then(|index| args.get(index + 1))
+                .map_or_else(
+                    || {
+                        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                            .join("../../benchmarks/schema/m3-paired-v2.schema.json")
+                    },
+                    PathBuf::from,
+                );
+            validate_m3_report(&report, &schema)?;
+            println!("M3 schema valid: {}", report.display());
+        }
+        Some("validate-m4") => {
+            let report = PathBuf::from(args.get(2).ok_or("missing M4 report path")?);
+            let schema = args
+                .iter()
+                .position(|arg| arg == "--schema")
+                .and_then(|index| args.get(index + 1))
+                .map_or_else(
+                    || {
+                        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                            .join("../../benchmarks/schema/m4-proven-translation-v1.schema.json")
+                    },
+                    PathBuf::from,
+                );
+            validate_m4_report(&report, &schema)?;
+            println!("M4 schema valid: {}", report.display());
+        }
+        Some("verify-jambda") => {
+            let repo = args
+                .iter()
+                .position(|arg| arg == "--repo")
+                .and_then(|index| args.get(index + 1))
+                .map(PathBuf::from)
+                .ok_or("missing --repo")?;
+            let manifest = args
+                .iter()
+                .position(|arg| arg == "--manifest")
+                .and_then(|index| args.get(index + 1))
+                .map_or_else(
+                    || {
+                        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                            .join("../../integration/jambda-m3.json")
+                    },
+                    PathBuf::from,
+                );
+            let provenance = verify_jambda_provenance(&repo, &manifest)?;
+            println!(
+                "Jambda provenance verified: {}@{}",
+                provenance.repository, provenance.revision
+            );
+        }
         Some("m3") => {
             let mut output = PathBuf::from("benchmarks/results");
             let mut samples = 5;
             let mut warmup = 1;
+            let mut jambda_repo = None;
             let mut index = 2;
             while index < args.len() {
                 match args[index].as_str() {
@@ -183,13 +247,72 @@ fn bench_command(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
                             .parse()?;
                         index += 2;
                     }
+                    "--jambda-repo" => {
+                        jambda_repo = Some(PathBuf::from(
+                            args.get(index + 1).ok_or("missing --jambda-repo value")?,
+                        ));
+                        index += 2;
+                    }
                     other => return Err(format!("unknown bench option: {other}").into()),
                 }
             }
-            let report = run_m3(&output, samples, warmup)?;
-            println!("M3 complete: {}", report.complete);
+            let jambda_repo = jambda_repo.ok_or("M3 requires --jambda-repo")?;
+            let report = run_m3(&output, samples, warmup, &jambda_repo)?;
+            println!(
+                "M3 complete: {}\nM3 publication ready: {}",
+                report.complete, report.publication_ready
+            );
         }
-        _ => return Err("expected bench m2 or bench report".into()),
+        Some("m4") => {
+            let mut output = PathBuf::from("benchmarks/results");
+            let mut samples = 1;
+            let mut warmup = 0;
+            let mut jambda_repo = None;
+            let mut index = 2;
+            while index < args.len() {
+                match args[index].as_str() {
+                    "--output" => {
+                        output =
+                            PathBuf::from(args.get(index + 1).ok_or("missing --output value")?);
+                        index += 2;
+                    }
+                    "--samples" => {
+                        samples = args
+                            .get(index + 1)
+                            .ok_or("missing --samples value")?
+                            .parse()?;
+                        index += 2;
+                    }
+                    "--warmup" => {
+                        warmup = args
+                            .get(index + 1)
+                            .ok_or("missing --warmup value")?
+                            .parse()?;
+                        index += 2;
+                    }
+                    "--jambda-repo" => {
+                        jambda_repo = Some(PathBuf::from(
+                            args.get(index + 1).ok_or("missing --jambda-repo value")?,
+                        ));
+                        index += 2;
+                    }
+                    other => return Err(format!("unknown bench option: {other}").into()),
+                }
+            }
+            let report = zk_jam_benchmark::run_m4(
+                &output,
+                samples,
+                warmup,
+                &jambda_repo.ok_or("M4 requires --jambda-repo")?,
+            )?;
+            println!(
+                "M4 complete: {}\nM4 publication ready: {}",
+                report.complete, report.publication_ready
+            );
+        }
+        _ => {
+            return Err("expected bench m2, bench report, verify-jambda, validate-m3, or m3".into())
+        }
     }
     Ok(())
 }

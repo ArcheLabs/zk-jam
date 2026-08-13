@@ -17,6 +17,7 @@ use openvm_stark_backend::{keygen::types::MultiStarkVerifyingKey, p3_field::Prim
 use openvm_stark_sdk::config::{app_params_with_100_bits_security, MAX_APP_LOG_STACKED_HEIGHT};
 use openvm_verify_stark_host::VmStarkProof;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 pub const OPENVM_VERSION: &str = "2.0.1";
 pub const OPENVM_REVISION: &str = "b820b25baab6c5d9b055f64e0286b6b1058e707c";
@@ -181,6 +182,87 @@ impl OpenVmProofArtifact {
     }
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct M4ExpectedStatement {
+    pub program_commitment: [u8; 32],
+    pub input_commitment: [u8; 32],
+    pub public_output: Vec<u8>,
+}
+
+/// M4 application statement wrapped around the normal OpenVM proof artifact. The three public
+/// values are emitted by the guest and therefore are part of the cryptographically verified
+/// OpenVM public-values proof, not trusted host metadata.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct M4ProofArtifact {
+    pub schema_version: u32,
+    pub program_commitment: [u8; 32],
+    pub input_commitment: [u8; 32],
+    pub public_output: Vec<u8>,
+    pub proof: OpenVmProofArtifact,
+}
+
+impl M4ProofArtifact {
+    pub fn to_bytes(&self) -> Result<Vec<u8>> {
+        serde_json::to_vec_pretty(self).wrap_err("serialize M4 proof artifact")
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        serde_json::from_slice(bytes).wrap_err("reload M4 proof artifact")
+    }
+
+    pub fn verify_m4(&self, expected: &M4ExpectedStatement, input: M2Input) -> Result<()> {
+        if self.schema_version != 1 {
+            return Err(eyre!("unsupported M4 proof artifact version"));
+        }
+        if self.program_commitment != expected.program_commitment
+            || self.input_commitment != expected.input_commitment
+            || self.public_output != expected.public_output
+        {
+            return Err(eyre!("M4 expected statement mismatch"));
+        }
+        if self.input_commitment != m4_input_commitment(input) {
+            return Err(eyre!("M4 input commitment does not match supplied input"));
+        }
+        let public_values = m4_public_values(
+            &self.program_commitment,
+            &self.input_commitment,
+            &self.public_output,
+        );
+        if self.proof.public_output != public_values {
+            return Err(eyre!("M4 proof public values mismatch"));
+        }
+        self.proof
+            .verify(&input.context_hash(&self.proof.benchmark))
+    }
+}
+
+/// Host-side mirror of the generated guest's canonical two-word input commitment. Keeping this
+/// check here prevents a caller from verifying a proof against an arbitrary expected commitment.
+pub fn m4_input_commitment(input: M2Input) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"zk-jam/input/v1");
+    hasher.update(1u32.to_le_bytes());
+    hasher.update(8u64.to_le_bytes());
+    hasher.update(input.a.to_le_bytes());
+    hasher.update(input.b.to_le_bytes());
+    hasher.finalize().into()
+}
+
+pub fn m4_public_values(
+    program_commitment: &[u8; 32],
+    input_commitment: &[u8; 32],
+    public_output: &[u8],
+) -> Vec<u8> {
+    let mut values = Vec::with_capacity(96);
+    values.extend_from_slice(program_commitment);
+    values.extend_from_slice(input_commitment);
+    let mut output = [0u8; 32];
+    output[..public_output.len().min(32)]
+        .copy_from_slice(&public_output[..public_output.len().min(32)]);
+    values.extend_from_slice(&output);
+    values
+}
+
 /// Small façade around OpenVM's official SDK flow.
 #[derive(Clone, Debug, Default)]
 pub struct OpenVmBackend;
@@ -203,16 +285,27 @@ impl OpenVmBackend {
     }
 
     pub fn program(&self, benchmark: M2Benchmark) -> Result<OpenVmProgramArtifact> {
+        let binary = benchmark.guest_binary();
+        self.program_from_guest_dir(benchmark, &guest_dir(), binary)
+    }
+
+    /// Build an OpenVM executable from a caller-provided generated guest package. M4 uses this
+    /// path so the translated IR, rather than a checked-in workload selector, determines the ELF.
+    pub fn program_from_guest_dir(
+        &self,
+        benchmark: M2Benchmark,
+        guest_dir: &std::path::Path,
+        guest_binary: &str,
+    ) -> Result<OpenVmProgramArtifact> {
         configure_guest_toolchain();
         let sdk = sdk();
-        let guest_dir = guest_dir();
         let build_started = Instant::now();
         let elf = sdk
             .build(
                 GuestOptions::default(),
-                &guest_dir,
+                guest_dir,
                 &Some(TargetFilter {
-                    name: benchmark.guest_binary().to_string(),
+                    name: guest_binary.to_string(),
                     kind: "bin".to_string(),
                 }),
                 None,
@@ -512,6 +605,23 @@ mod tests {
         assert_ne!(
             M2Input::arithmetic(1, 2).context_hash(&benchmark),
             M2Input::arithmetic(1, 3).context_hash(&benchmark)
+        );
+    }
+
+    #[test]
+    fn m4_input_commitment_is_canonical_and_input_bound() {
+        assert_eq!(
+            m4_input_commitment(M2Input::arithmetic(7, 9)),
+            m4_input_commitment(M2Input::arithmetic(7, 9))
+        );
+        assert_ne!(
+            m4_input_commitment(M2Input::arithmetic(7, 9)),
+            m4_input_commitment(M2Input::arithmetic(7, 10))
+        );
+        assert_eq!(m4_public_values(&[1; 32], &[2; 32], &[3, 4])[..32], [1; 32]);
+        assert_eq!(
+            m4_public_values(&[1; 32], &[2; 32], &[3, 4])[32..64],
+            [2; 32]
         );
     }
 

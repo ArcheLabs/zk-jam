@@ -11,6 +11,7 @@ on:
         options:
           - m2
           - m3
+          - m4
       samples:
         description: Measured samples per case
         required: true
@@ -95,10 +96,33 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 360
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout zk-jam
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - name: Install pinned OpenVM guest toolchain
         run: rustup toolchain install nightly-2026-01-18 --profile minimal --component rust-src
+      - name: Read pinned Jambda manifest
+        id: jambda
+        run: |
+          repository="$(jq -er '.repository' integration/jambda-m3.json)"
+          revision="$(jq -er '.revision' integration/jambda-m3.json)"
+          [[ "$revision" =~ ^[0-9a-fA-F]{40}$ ]]
+          echo "repository=$repository" >> "$GITHUB_OUTPUT"
+          echo "revision=$revision" >> "$GITHUB_OUTPUT"
+      - name: Require Jambda read token
+        env:
+          JAMBDA_READ_TOKEN: ${{ secrets.JAMBDA_READ_TOKEN }}
+        run: test -n "$JAMBDA_READ_TOKEN"
+      - name: Checkout pinned Jambda
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.jambda.outputs.repository }}
+          ref: ${{ steps.jambda.outputs.revision }}
+          token: ${{ secrets.JAMBDA_READ_TOKEN }}
+          path: .m3-deps/jambda
+          persist-credentials: false
       - name: Validate benchmark inputs
         env:
           SAMPLES: ${{ inputs.samples }}
@@ -112,17 +136,28 @@ jobs:
           WARMUP: ${{ inputs.warmup }}
         run: |
           cargo run --release -p zk-jam -- bench m3 \
-            --samples "$SAMPLES" --warmup "$WARMUP" --output benchmarks/results
+            --samples "$SAMPLES" --warmup "$WARMUP" \
+            --jambda-repo .m3-deps/jambda --output benchmarks/results
       - name: Locate M3 result
         id: result
         run: |
           result_dir="$(find benchmarks/results -mindepth 1 -maxdepth 1 -type d | sort | tail -n 1)"
           test -n "$result_dir"
           echo "dir=$result_dir" >> "$GITHUB_OUTPUT"
+      - name: Validate M3 JSON Schema
+        run: |
+          cargo run --release -p zk-jam -- bench validate-m3 \
+            "${{ steps.result.outputs.dir }}/m3-benchmark.json"
+      - name: Enforce M3 completion gate
+        run: |
+          test "$(jq -r '.pairs | length' "${{ steps.result.outputs.dir }}/m3-benchmark.json")" = "3"
+          test "$(jq -r '.complete' "${{ steps.result.outputs.dir }}/m3-benchmark.json")" = "true"
+          test "$(jq -r '.jambda_provenance_verified' "${{ steps.result.outputs.dir }}/m3-benchmark.json")" = "true"
+          test "$(jq -r '.publication_ready' "${{ steps.result.outputs.dir }}/m3-benchmark.json")" = "true"
       - name: Upload M3 artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: m3-translation-benchmark-${{ github.run_id }}
+          name: m3-translation-benchmark-${{ github.sha }}-${{ github.run_id }}
           if-no-files-found: error
           path: |
             ${{ steps.result.outputs.dir }}/m3-benchmark.json
@@ -130,7 +165,70 @@ jobs:
             ${{ steps.result.outputs.dir }}/m3-benchmark.md
       - name: Publish M3 report to job summary
         run: cat "${{ steps.result.outputs.dir }}/m3-benchmark.md" >> "$GITHUB_STEP_SUMMARY"
-      - name: Enforce M3 completion gate
+
+  m4:
+    if: inputs.milestone == 'm4'
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout zk-jam
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install pinned OpenVM guest toolchain
+        run: rustup toolchain install nightly-2026-01-18 --profile minimal --component rust-src
+      - name: Read pinned Jambda manifest
+        id: jambda
         run: |
-          test "$(jq -r '.pairs | length' "${{ steps.result.outputs.dir }}/m3-benchmark.json")" = "3"
-          test "$(jq -r '.complete' "${{ steps.result.outputs.dir }}/m3-benchmark.json")" = "true"
+          repository="$(jq -er '.repository' integration/jambda-m3.json)"
+          revision="$(jq -er '.revision' integration/jambda-m3.json)"
+          [[ "$revision" =~ ^[0-9a-fA-F]{40}$ ]]
+          echo "repository=$repository" >> "$GITHUB_OUTPUT"
+          echo "revision=$revision" >> "$GITHUB_OUTPUT"
+      - name: Require Jambda read token
+        env:
+          JAMBDA_READ_TOKEN: ${{ secrets.JAMBDA_READ_TOKEN }}
+        run: test -n "$JAMBDA_READ_TOKEN"
+      - name: Checkout pinned Jambda
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.jambda.outputs.repository }}
+          ref: ${{ steps.jambda.outputs.revision }}
+          token: ${{ secrets.JAMBDA_READ_TOKEN }}
+          path: .m3-deps/jambda
+          persist-credentials: false
+      - name: Run M4 proven translation benchmark
+        env:
+          SAMPLES: ${{ inputs.samples }}
+          WARMUP: ${{ inputs.warmup }}
+        run: |
+          cargo run --release -p zk-jam -- bench m4 \
+            --samples "$SAMPLES" --warmup "$WARMUP" \
+            --jambda-repo .m3-deps/jambda --output benchmarks/results
+      - name: Locate M4 result
+        id: result
+        run: |
+          result_dir="$(find benchmarks/results -mindepth 1 -maxdepth 1 -type d | sort | tail -n 1)"
+          test -n "$result_dir"
+          echo "dir=$result_dir" >> "$GITHUB_OUTPUT"
+      - name: Validate M4 JSON Schema
+        run: |
+          cargo run --release -p zk-jam -- bench validate-m4 \
+            "${{ steps.result.outputs.dir }}/m4-benchmark.json"
+      - name: Enforce M4 completion gate
+        run: |
+          test "$(jq -r '.cases | length' "${{ steps.result.outputs.dir }}/m4-benchmark.json")" = "6"
+          test "$(jq -r '.complete' "${{ steps.result.outputs.dir }}/m4-benchmark.json")" = "true"
+          test "$(jq -r '.publication_ready' "${{ steps.result.outputs.dir }}/m4-benchmark.json")" = "true"
+      - name: Upload M4 artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: m4-proven-translation-${{ github.sha }}-${{ github.run_id }}
+          if-no-files-found: error
+          path: |
+            ${{ steps.result.outputs.dir }}/m4-benchmark.json
+            ${{ steps.result.outputs.dir }}/m4-benchmark.csv
+            ${{ steps.result.outputs.dir }}/m4-benchmark.md
+      - name: Publish M4 report to job summary
+        run: cat "${{ steps.result.outputs.dir }}/m4-benchmark.md" >> "$GITHUB_STEP_SUMMARY"

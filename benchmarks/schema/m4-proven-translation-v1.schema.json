@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ZK-JAM M4 proven translation benchmark v1",
+  "type": "object",
+  "required": [
+    "schema_version", "translation_version", "zk_jam_revision", "git_dirty",
+    "jambda_repository", "jambda_revision", "jambda_provenance_verified",
+    "openvm_version", "openvm_revision", "guest_toolchain", "backend",
+    "samples", "warmup", "programs", "cases", "complete", "publication_ready"
+  ],
+  "properties": {
+    "schema_version": {"const": "m4-proven-translation-v1"},
+    "translation_version": {"const": 1},
+    "zk_jam_revision": {"type": "string", "pattern": "^[0-9a-fA-F]{40}$"},
+    "git_dirty": {"type": "boolean"},
+    "jambda_repository": {"const": "ArcheLabs/jambda"},
+    "jambda_revision": {"type": "string", "pattern": "^[0-9a-fA-F]{40}$"},
+    "jambda_provenance_verified": {"type": "boolean"},
+    "openvm_version": {"type": "string"},
+    "openvm_revision": {"type": "string", "pattern": "^[0-9a-fA-F]{40}$"},
+    "guest_toolchain": {"const": "nightly-2026-01-18"},
+    "backend": {"const": "cpu"},
+    "samples": {"type": "integer", "minimum": 1},
+    "warmup": {"type": "integer", "minimum": 0},
+    "programs": {"const": 3},
+    "cases": {"type": "array", "minItems": 6, "items": {"$ref": "#/$defs/case"}},
+    "complete": {"type": "boolean"},
+    "publication_ready": {"type": "boolean"}
+  },
+  "$defs": {
+    "case": {
+      "type": "object",
+      "required": [
+        "name", "pvm_program_commitment", "translated_program_commitment", "input_commitment",
+        "reference_output_hex", "proven_output_hex", "translation_ns", "emission_ns", "build_ns",
+        "transpile_ns", "keygen_ns", "execute_ns", "prove_ns", "verify_ns", "proof_bytes",
+        "peak_rss_bytes", "proof_verified", "program_binding_verified", "input_binding_verified",
+        "output_matches_reference", "error", "complete"
+      ],
+      "properties": {
+        "name": {"type": "string"},
+        "pvm_program_commitment": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "translated_program_commitment": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "input_commitment": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "reference_output_hex": {"type": "string"},
+        "proven_output_hex": {"type": "string"},
+        "translation_ns": {"type": "integer", "minimum": 0},
+        "emission_ns": {"type": "integer", "minimum": 0},
+        "build_ns": {"type": "integer", "minimum": 0},
+        "transpile_ns": {"type": "integer", "minimum": 0},
+        "keygen_ns": {"type": "integer", "minimum": 0},
+        "execute_ns": {"type": "integer", "minimum": 0},
+        "prove_ns": {"type": "integer", "minimum": 0},
+        "verify_ns": {"type": "integer", "minimum": 0},
+        "proof_bytes": {"type": "integer", "minimum": 0},
+        "peak_rss_bytes": {"type": ["integer", "null"], "minimum": 0},
+        "proof_verified": {"type": "boolean"},
+        "program_binding_verified": {"type": "boolean"},
+        "input_binding_verified": {"type": "boolean"},
+        "output_matches_reference": {"type": "boolean"},
+        "error": {"type": ["string", "null"]},
+        "complete": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

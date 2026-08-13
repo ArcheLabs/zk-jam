@@ -13,6 +13,7 @@ openvm-sdk.workspace = true
 openvm-stark-backend.workspace = true
 openvm-stark-sdk.workspace = true
 openvm-verify-stark-host.workspace = true
+sha2.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

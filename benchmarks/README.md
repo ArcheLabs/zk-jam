@@ -7,6 +7,8 @@ benchmarks/
   schema/{environment-v1.schema.json,run-v1.schema.json,summary-v1.schema.json}
   schema/{environment-v2.schema.json,run-v2.schema.json,summary-v2.schema.json}
   schema/m3-paired-v1.schema.json
+  schema/m3-paired-v2.schema.json
+  schema/m4-proven-translation-v1.schema.json
   baselines/m2.json
   results/<run-id>/{environment.json,runs.jsonl,summary.json,summary.csv,report.md,artifacts/}
   results/<run-id>/{m3-benchmark.json,m3-benchmark.csv,m3-benchmark.md}
@@ -20,11 +22,20 @@ M2 emits the v2 formats. Peak RSS is one scalar per isolated benchmark-case proc
 distribution. Publication-ready M2 runs require the pinned guest toolchain
 `nightly-2026-01-18`.
 
-Run the M3 paired smoke with `zk-jam bench m3 --samples 1 --warmup 0`. It emits
+Run the M3 paired smoke with `zk-jam bench m3 --jambda-repo /path/to/jambda --samples 1 --warmup 0`. It emits
 `m3-benchmark.json`, `m3-benchmark.csv`, and `m3-benchmark.md` under an
 isolated run directory. The JSON follows
-`schema/m3-paired-v1.schema.json`; `complete: true` requires three pairs,
+`schema/m3-paired-v2.schema.json`; `complete: true` requires three pairs,
 matching public outputs, successful proof verification, and no worker error.
 Native and translated cases run in separate subprocesses so peak RSS is
 case-scoped. M3 currently covers only the static arithmetic, branch-true, and
-16 KiB memory fixtures.
+16 KiB memory fixtures. `publication_ready` additionally requires a clean
+zk-jam checkout, verified Jambda provenance, and the pinned OpenVM/toolchain.
+
+Validate a report with `zk-jam bench validate-m3 path/to/m3-benchmark.json`.
+
+M4 uses `zk-jam bench m4 --jambda-repo /path/to/jambda --samples 1 --warmup 0`
+and emits the proven-translation v1 JSON/CSV/Markdown triplet. Its six cases
+reuse three generated executables: two arithmetic inputs, branch true/false/
+equal, and memory-16KiB. M4 publication readiness additionally requires every
+proof, program binding, input binding, and reference-output comparison to pass.

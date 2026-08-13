@@ -7,13 +7,17 @@ integration spike, and M3 adds a pinned Jambda-revision translation smoke for
 arithmetic, branch-true, and deterministic 16 KiB memory workloads. Refine
 Host Calls, GAS, sub-VM, and Native AIR remain outside this scope.
 
+The M3 publication benchmark requires read-only access to the private pinned
+Jambda revision. Local development and normal CI do not require Jambda access.
+
 ```text
 cargo test --workspace
 cargo run -p zk-jam -- make-minimal /tmp/example.case.bin
 cargo run -p zk-jam -- inspect /tmp/example.case.bin
 cargo run -p zk-jam -- openvm info
 cargo run -p zk-jam -- bench m2 --backend cpu
-cargo run -p zk-jam -- bench m3 --samples 1 --warmup 0
+cargo run --release -p zk-jam -- bench m3 --jambda-repo /path/to/jambda --samples 1 --warmup 0
+cargo run --release -p zk-jam -- bench m4 --jambda-repo /path/to/jambda --samples 1 --warmup 0
 ```
 
 See [docs/smoke-v0.md](docs/smoke-v0.md) and
