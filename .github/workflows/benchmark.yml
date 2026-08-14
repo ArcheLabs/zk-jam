@@ -111,16 +111,22 @@ jobs:
           [[ "$revision" =~ ^[0-9a-fA-F]{40}$ ]]
           echo "repository=$repository" >> "$GITHUB_OUTPUT"
           echo "revision=$revision" >> "$GITHUB_OUTPUT"
-      - name: Require Jambda read token
-        env:
-          JAMBDA_READ_TOKEN: ${{ secrets.JAMBDA_READ_TOKEN }}
-        run: test -n "$JAMBDA_READ_TOKEN"
+      - name: Create Jambda GitHub App token
+        id: jambda-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.JAMBDA_APP_CLIENT_ID }}
+          private-key: ${{ secrets.JAMBDA_APP_PRIVATE_KEY }}
+          owner: ArcheLabs
+          repositories: |
+            jambda
+          permission-contents: read
       - name: Checkout pinned Jambda
         uses: actions/checkout@v4
         with:
           repository: ${{ steps.jambda.outputs.repository }}
           ref: ${{ steps.jambda.outputs.revision }}
-          token: ${{ secrets.JAMBDA_READ_TOKEN }}
+          token: ${{ steps.jambda-token.outputs.token }}
           path: .m3-deps/jambda
           persist-credentials: false
       - name: Validate benchmark inputs
@@ -186,16 +192,22 @@ jobs:
           [[ "$revision" =~ ^[0-9a-fA-F]{40}$ ]]
           echo "repository=$repository" >> "$GITHUB_OUTPUT"
           echo "revision=$revision" >> "$GITHUB_OUTPUT"
-      - name: Require Jambda read token
-        env:
-          JAMBDA_READ_TOKEN: ${{ secrets.JAMBDA_READ_TOKEN }}
-        run: test -n "$JAMBDA_READ_TOKEN"
+      - name: Create Jambda GitHub App token
+        id: jambda-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.JAMBDA_APP_CLIENT_ID }}
+          private-key: ${{ secrets.JAMBDA_APP_PRIVATE_KEY }}
+          owner: ArcheLabs
+          repositories: |
+            jambda
+          permission-contents: read
       - name: Checkout pinned Jambda
         uses: actions/checkout@v4
         with:
           repository: ${{ steps.jambda.outputs.repository }}
           ref: ${{ steps.jambda.outputs.revision }}
-          token: ${{ secrets.JAMBDA_READ_TOKEN }}
+          token: ${{ steps.jambda-token.outputs.token }}
           path: .m3-deps/jambda
           persist-credentials: false
       - name: Run fixed M4 execute-only preflight
@@ -249,16 +261,22 @@ jobs:
           [[ "$revision" =~ ^[0-9a-fA-F]{40}$ ]]
           echo "repository=$repository" >> "$GITHUB_OUTPUT"
           echo "revision=$revision" >> "$GITHUB_OUTPUT"
-      - name: Require Jambda read token
-        env:
-          JAMBDA_READ_TOKEN: ${{ secrets.JAMBDA_READ_TOKEN }}
-        run: test -n "$JAMBDA_READ_TOKEN"
+      - name: Create Jambda GitHub App token
+        id: jambda-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.JAMBDA_APP_CLIENT_ID }}
+          private-key: ${{ secrets.JAMBDA_APP_PRIVATE_KEY }}
+          owner: ArcheLabs
+          repositories: |
+            jambda
+          permission-contents: read
       - name: Checkout pinned Jambda
         uses: actions/checkout@v4
         with:
           repository: ${{ steps.jambda.outputs.repository }}
           ref: ${{ steps.jambda.outputs.revision }}
-          token: ${{ secrets.JAMBDA_READ_TOKEN }}
+          token: ${{ steps.jambda-token.outputs.token }}
           path: .m3-deps/jambda
           persist-credentials: false
       - name: Prove one generated M4 program
@@ -383,8 +401,8 @@ jobs:
           path: benchmarks/results/m4-publication-${{ matrix.workload }}.json
 
   m4-publication-aggregate:
-    if: ${{ always() && inputs.milestone == 'm4' }}
-    needs: m4-publication
+    if: ${{ always() && inputs.milestone == 'm4' && needs.m4-aggregate.result == 'success' }}
+    needs: [m4-aggregate, m4-publication]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
