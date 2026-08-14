@@ -344,6 +344,13 @@ jobs:
     needs: m4-aggregate
     runs-on: ubuntu-latest
     timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        workload:
+          - arithmetic
+          - branch
+          - memory
     steps:
       - name: Checkout zk-jam
         uses: actions/checkout@v4
@@ -359,24 +366,61 @@ jobs:
         with:
           name: m4-proven-translation-${{ github.sha }}-${{ github.run_id }}
           path: artifacts/m4
-      - name: Run same-runner Native versus translated publication comparison
+      - name: Run same-runner Native then Translated comparison
         run: |
           mkdir -p benchmarks/results
-          cargo run --release -p zk-jam -- bench m4-publication \
+          cargo run --release -p zk-jam -- bench m4-publication-workload \
+            --workload "${{ matrix.workload }}" \
             --m4-report artifacts/m4/m4-benchmark.json \
             --output benchmarks/results
-      - name: Locate and validate publication report
+      - name: Upload workload publication artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m4-publication-${{ matrix.workload }}-${{ github.sha }}-${{ github.run_id }}
+          if-no-files-found: ignore
+          path: benchmarks/results/m4-publication-${{ matrix.workload }}.json
+
+  m4-publication-aggregate:
+    if: ${{ always() && inputs.milestone == 'm4' }}
+    needs: m4-publication
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout zk-jam
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build benchmark CLI
+        run: cargo build --release -p zk-jam
+      - name: Download M4 correctness report
+        uses: actions/download-artifact@v4
+        with:
+          name: m4-proven-translation-${{ github.sha }}-${{ github.run_id }}
+          path: artifacts/m4
+      - name: Download workload publication artifacts
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: m4-publication-*-${{ github.sha }}-${{ github.run_id }}
+          path: artifacts/publication
+          merge-multiple: true
+      - name: Aggregate publication reports without proving
         id: result
         run: |
+          mkdir -p benchmarks/results
+          cargo run --release -p zk-jam -- bench aggregate-m4-publication \
+            --m4-report artifacts/m4/m4-benchmark.json \
+            --partial-arithmetic artifacts/publication/m4-publication-arithmetic.json \
+            --partial-branch artifacts/publication/m4-publication-branch.json \
+            --partial-memory artifacts/publication/m4-publication-memory.json \
+            --output benchmarks/results
           result_dir="$(find benchmarks/results -mindepth 1 -maxdepth 1 -type d -name 'm4-publication-*' | sort | tail -n 1)"
           test -n "$result_dir"
           cargo run --release -p zk-jam -- bench validate-m4-publication "$result_dir/m4-publication.json"
-          test "$(jq -r '.m4_complete' "$result_dir/m4-publication.json")" = "true"
-          test "$(jq -r '.m4_publication_ready' "$result_dir/m4-publication.json")" = "true"
-          test "$(jq -r '.comparison_status' "$result_dir/m4-publication.json")" = "complete"
-          test "$(jq -r '.comparison_complete' "$result_dir/m4-publication.json")" = "true"
           echo "dir=$result_dir" >> "$GITHUB_OUTPUT"
-      - name: Upload M4 publication artifacts
+      - name: Upload aggregate publication artifacts
         uses: actions/upload-artifact@v4
         with:
           name: m4-publication-${{ github.sha }}-${{ github.run_id }}

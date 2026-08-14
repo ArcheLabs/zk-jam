@@ -55,12 +55,24 @@ Run the M4.0.2 publication comparison only after the M4 correctness report is
 complete and publication-ready:
 
 ```text
-zk-jam bench m4-publication --m4-report path/to/m4-benchmark.json --output benchmarks/results
+zk-jam bench m4-publication-workload --workload arithmetic --m4-report path/to/m4-benchmark.json --output benchmarks/results
+zk-jam bench aggregate-m4-publication --m4-report path/to/m4-benchmark.json \
+  --partial-arithmetic benchmarks/results/m4-publication-arithmetic.json \
+  --partial-branch benchmarks/results/m4-publication-branch.json \
+  --partial-memory benchmarks/results/m4-publication-memory.json \
+  --output benchmarks/results
 zk-jam bench validate-m4-publication path/to/m4-publication.json
 ```
 
-It compares direct Native OpenVM guests with generated translated guests for
-arithmetic `[7, 9]`, branch-true `[21, 8]`, and 16 KiB memory
+The workflow runs the three workload commands in a matrix. Within each matrix
+job, Native OpenVM runs first and the generated translated guest runs second on
+the same runner. The aggregate job only reads the three partial JSON artifacts;
+it performs no proving. The partial artifacts are named
+`m4-publication-arithmetic.json`, `m4-publication-branch.json`, and
+`m4-publication-memory.json`.
+
+The comparison uses direct Native OpenVM guests and generated translated guests
+for arithmetic `[7, 9]`, branch-true `[21, 8]`, and 16 KiB memory
 `[0x12345678, 16384]`. Both sides use the same 96-byte public-values envelope,
 runtime input encoding, OpenVM configuration, and runner. Build/transpile,
 keygen, and translation/emission are preparation or per-program costs;

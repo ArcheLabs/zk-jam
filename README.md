@@ -18,8 +18,8 @@ cargo run -p zk-jam -- openvm info
 cargo run -p zk-jam -- bench m2 --backend cpu
 cargo run --release -p zk-jam -- bench m3 --jambda-repo /path/to/jambda --samples 1 --warmup 0
 cargo run --release -p zk-jam -- bench m4 --execute-only --jambda-repo /path/to/jambda --samples 1 --warmup 0
-# after the M4 correctness artifact is available:
-cargo run --release -p zk-jam -- bench m4-publication --m4-report /path/to/m4-benchmark.json --output benchmarks/results
+# after the M4 correctness artifact is available, run one workload comparison:
+cargo run --release -p zk-jam -- bench m4-publication-workload --workload arithmetic --m4-report /path/to/m4-benchmark.json --output benchmarks/results
 ```
 
 See [docs/smoke-v0.md](docs/smoke-v0.md) and

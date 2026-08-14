@@ -17,12 +17,12 @@ use zk_jam_translation::{translate_workload, workload_program, M3Workload, JAMBD
 
 mod m4;
 pub use m4::{
-    aggregate_m4_reports, m4_case_specs, m4_program_specs, run_m4, run_m4_preflight,
-    run_m4_proof_program, run_m4_publication, run_m4_publication_worker,
-    validate_m4_preflight_report, validate_m4_proof_partial_report, validate_m4_publication_report,
-    validate_m4_report, M4BenchmarkReport, M4CaseRecord, M4CaseSpec, M4PreflightCaseRecord,
-    M4PreflightReport, M4ProgramId, M4ProgramSpec, M4ProofPartialReport, M4PublicationReport,
-    M4PublicationSide, M4PublicationWorkload,
+    aggregate_m4_publication, aggregate_m4_reports, m4_case_specs, m4_program_specs, run_m4,
+    run_m4_preflight, run_m4_proof_program, run_m4_publication, run_m4_publication_worker,
+    run_m4_publication_workload, validate_m4_preflight_report, validate_m4_proof_partial_report,
+    validate_m4_publication_report, validate_m4_report, M4BenchmarkReport, M4CaseRecord,
+    M4CaseSpec, M4PreflightCaseRecord, M4PreflightReport, M4ProgramId, M4ProgramSpec,
+    M4ProofPartialReport, M4PublicationReport, M4PublicationSide, M4PublicationWorkload,
 };
 
 pub use zk_jam_refine_interface::RefineCaseV1;

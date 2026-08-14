@@ -770,143 +770,136 @@ pub fn run_m4_publication_worker(
     )
 }
 
-pub fn run_m4_publication(
+fn representative_workloads() -> [(M4ProgramId, [u32; 2]); 3] {
+    [
+        (M4ProgramId::Arithmetic, [7, 9]),
+        (M4ProgramId::Branch, [21, 8]),
+        (M4ProgramId::Memory16K, [0x1234_5678, 16 * 1024]),
+    ]
+}
+
+fn collect_m4_publication_workload(
     output_root: &Path,
-    m4_report_path: &Path,
-) -> Result<M4PublicationReport> {
-    let m4_report: M4BenchmarkReport = serde_json::from_slice(&fs::read(m4_report_path)?)?;
-    fs::create_dir_all(output_root)?;
-    let run_id = format!(
-        "m4-publication-{}",
-        command("date", &["-u", "+%Y%m%d-%H%M%SZ"])?
-    );
-    let runner = crate::environment_report(&run_id, "cpu")?;
-    let representative = [
-        (M4ProgramId::Arithmetic, [7, 9], "native"),
-        (M4ProgramId::Branch, [21, 8], "translated"),
-        (M4ProgramId::Memory16K, [0x1234_5678, 16 * 1024], "native"),
-    ];
-    let mut workloads = Vec::with_capacity(representative.len());
-    for (workload, input, first) in representative {
-        let mut sides = [
-            ("native", M4PublicationSide::default()),
-            ("translated", M4PublicationSide::default()),
-        ];
-        let mut metadata = [(0usize, 0usize, 0u128, 0u128); 2];
-        for implementation in [
-            first,
-            if first == "native" {
-                "translated"
-            } else {
-                "native"
-            },
-        ] {
-            let slot = if implementation == "native" { 0 } else { 1 };
-            let worker_path = output_root.join(format!(
-                ".m4-publication-{run_id}-{implementation}-{}.json",
-                workload.name()
-            ));
-            let executable = env::current_exe().wrap_err("locate M4 publication worker")?;
-            let a = input[0].to_string();
-            let b = input[1].to_string();
-            let output_text = worker_path
-                .to_str()
-                .ok_or_else(|| eyre!("invalid publication worker path"))?;
-            let status = Command::new(&executable)
-                .args([
-                    "__m4-publication-worker",
-                    "--implementation",
-                    implementation,
-                    "--workload",
-                    workload.name(),
-                    "--a",
-                    &a,
-                    "--b",
-                    &b,
-                    "--output",
-                    output_text,
-                ])
-                .status()
-                .wrap_err("spawn M4 publication worker")?;
-            if status.success() {
-                let worker: M4PublicationWorkerOutput = read_json(&worker_path)?;
-                sides[slot].1 = worker.side;
-                metadata[slot] = (
-                    worker.pvm_instruction_count,
-                    worker.translated_instruction_count,
-                    worker.translation_ns,
-                    worker.emission_ns,
-                );
-            } else {
-                sides[slot].1.error = Some(format!("{implementation} publication worker failed"));
-            }
-            let _ = fs::remove_file(worker_path);
+    run_id: &str,
+    workload: M4ProgramId,
+    input: [u32; 2],
+) -> Result<M4PublicationWorkload> {
+    let mut sides = [M4PublicationSide::default(), M4PublicationSide::default()];
+    let mut metadata = [(0usize, 0usize, 0u128, 0u128); 2];
+    // Keep Native and Translated sequential on this process/runner. The matrix
+    // in CI parallelizes only across workloads.
+    for implementation in ["native", "translated"] {
+        let slot = if implementation == "native" { 0 } else { 1 };
+        let worker_path = output_root.join(format!(
+            ".m4-publication-{run_id}-{implementation}-{}.json",
+            workload.name()
+        ));
+        let executable = env::current_exe().wrap_err("locate M4 publication worker")?;
+        let a = input[0].to_string();
+        let b = input[1].to_string();
+        let output_text = worker_path
+            .to_str()
+            .ok_or_else(|| eyre!("invalid publication worker path"))?;
+        let status = Command::new(&executable)
+            .args([
+                "__m4-publication-worker",
+                "--implementation",
+                implementation,
+                "--workload",
+                workload.name(),
+                "--a",
+                &a,
+                "--b",
+                &b,
+                "--output",
+                output_text,
+            ])
+            .status()
+            .wrap_err("spawn M4 publication worker")?;
+        if status.success() {
+            let worker: M4PublicationWorkerOutput = read_json(&worker_path)?;
+            sides[slot] = worker.side;
+            metadata[slot] = (
+                worker.pvm_instruction_count,
+                worker.translated_instruction_count,
+                worker.translation_ns,
+                worker.emission_ns,
+            );
+        } else {
+            sides[slot].error = Some(format!("{implementation} publication worker failed"));
         }
-        let reference_started = Instant::now();
-        let reference_output = execute_reference(
-            &workload_program(workload.workload()),
-            &ExecutionInputV1::new(input.to_vec()),
-            workload.output_register(),
-        )? as u32;
-        let reference_execute_ns = reference_started.elapsed().as_nanos();
-        let mut expected_output = [0u8; 32];
-        expected_output[..4].copy_from_slice(&reference_output.to_le_bytes());
-        let expected_hex = hex(&expected_output);
-        let semantics_match = sides.iter().all(|(_, side)| {
-            side.proof_verified
-                && side.error.is_none()
-                && side.public_values_len == Some(M4PublicValuesV1::LEN)
-                && side.output_hex.as_deref() == Some(expected_hex.as_str())
-        }) && sides[0].1.output_hex == sides[1].1.output_hex;
-        let translated = &sides[1].1;
-        let native = &sides[0].1;
-        let ratios = M4PublicationRatios {
-            execute_overhead_ratio: ratio_opt(translated.execute_ns, native.execute_ns),
-            prove_overhead_ratio: ratio_opt(translated.prove_ns, native.prove_ns),
-            verify_overhead_ratio: ratio_opt(translated.verify_ns, native.verify_ns),
-            keygen_overhead_ratio: ratio_opt(translated.keygen_ns, native.keygen_ns),
-            proof_size_overhead_ratio: ratio_opt_usize(translated.proof_bytes, native.proof_bytes),
-            peak_rss_overhead_ratio: ratio_opt_u64(
-                translated.peak_rss_bytes,
-                native.peak_rss_bytes,
-            ),
-            executable_size_overhead_ratio: ratio_opt_usize(
-                translated.executable_bytes,
-                native.executable_bytes,
-            ),
-            serialized_executable_size_overhead_ratio: ratio_opt_usize(
-                translated.serialized_executable_bytes,
-                native.serialized_executable_bytes,
-            ),
-        };
-        let translated_pipeline_ns = sum_pipeline(translated, metadata[1].2, metadata[1].3);
-        let fixed_cost_observation = M4FixedCostObservation {
-            translated_pipeline_ns,
-            translation_share_of_pipeline: share(metadata[1].2, translated_pipeline_ns),
-            prove_share_of_pipeline: share_opt(translated.prove_ns, translated_pipeline_ns),
-            keygen_share_of_pipeline: share_opt(translated.keygen_ns, translated_pipeline_ns),
-        };
-        workloads.push(M4PublicationWorkload {
-            name: workload.name().to_string(),
-            input,
-            reference_output_hex: expected_hex,
-            pvm_instruction_count: metadata[0].0,
-            translated_instruction_count: metadata[1].1,
-            instruction_expansion_ratio: if metadata[0].0 == 0 {
-                0.0
-            } else {
-                metadata[1].1 as f64 / metadata[0].0 as f64
-            },
-            translation_ns: metadata[1].2,
-            emission_ns: metadata[1].3,
-            reference_execute_ns: Some(reference_execute_ns),
-            native: sides[0].1.clone(),
-            translated: sides[1].1.clone(),
-            ratios,
-            fixed_cost_observation,
-            semantics_match,
-        });
+        let _ = fs::remove_file(worker_path);
     }
+
+    let reference_started = Instant::now();
+    let reference_output = execute_reference(
+        &workload_program(workload.workload()),
+        &ExecutionInputV1::new(input.to_vec()),
+        workload.output_register(),
+    )? as u32;
+    let reference_execute_ns = reference_started.elapsed().as_nanos();
+    let mut expected_output = [0u8; 32];
+    expected_output[..4].copy_from_slice(&reference_output.to_le_bytes());
+    let expected_hex = hex(&expected_output);
+    let semantics_match = sides.iter().all(|side| {
+        side.proof_verified
+            && side.error.is_none()
+            && side.public_values_len == Some(M4PublicValuesV1::LEN)
+            && side.output_hex.as_deref() == Some(expected_hex.as_str())
+    }) && sides[0].output_hex == sides[1].output_hex;
+    let translated = &sides[1];
+    let native = &sides[0];
+    let ratios = M4PublicationRatios {
+        execute_overhead_ratio: ratio_opt(translated.execute_ns, native.execute_ns),
+        prove_overhead_ratio: ratio_opt(translated.prove_ns, native.prove_ns),
+        verify_overhead_ratio: ratio_opt(translated.verify_ns, native.verify_ns),
+        keygen_overhead_ratio: ratio_opt(translated.keygen_ns, native.keygen_ns),
+        proof_size_overhead_ratio: ratio_opt_usize(translated.proof_bytes, native.proof_bytes),
+        peak_rss_overhead_ratio: ratio_opt_u64(translated.peak_rss_bytes, native.peak_rss_bytes),
+        executable_size_overhead_ratio: ratio_opt_usize(
+            translated.executable_bytes,
+            native.executable_bytes,
+        ),
+        serialized_executable_size_overhead_ratio: ratio_opt_usize(
+            translated.serialized_executable_bytes,
+            native.serialized_executable_bytes,
+        ),
+    };
+    let translated_pipeline_ns = sum_pipeline(translated, metadata[1].2, metadata[1].3);
+    let fixed_cost_observation = M4FixedCostObservation {
+        translated_pipeline_ns,
+        translation_share_of_pipeline: share(metadata[1].2, translated_pipeline_ns),
+        prove_share_of_pipeline: share_opt(translated.prove_ns, translated_pipeline_ns),
+        keygen_share_of_pipeline: share_opt(translated.keygen_ns, translated_pipeline_ns),
+    };
+    Ok(M4PublicationWorkload {
+        name: workload.name().to_string(),
+        input,
+        reference_output_hex: expected_hex,
+        pvm_instruction_count: metadata[0].0,
+        translated_instruction_count: metadata[1].1,
+        instruction_expansion_ratio: if metadata[0].0 == 0 {
+            0.0
+        } else {
+            metadata[1].1 as f64 / metadata[0].0 as f64
+        },
+        translation_ns: metadata[1].2,
+        emission_ns: metadata[1].3,
+        reference_execute_ns: Some(reference_execute_ns),
+        native: sides[0].clone(),
+        translated: sides[1].clone(),
+        ratios,
+        fixed_cost_observation,
+        semantics_match,
+    })
+}
+
+fn publication_report(
+    m4_report: &M4BenchmarkReport,
+    run_id: &str,
+    workloads: Vec<M4PublicationWorkload>,
+) -> Result<M4PublicationReport> {
+    let runner = crate::environment_report(run_id, "cpu")?;
     let available = workloads
         .iter()
         .flat_map(|workload| [&workload.native, &workload.translated])
@@ -941,21 +934,153 @@ pub fn run_m4_publication(
         single_sample_diagnostic: true,
         workloads,
     };
-    let result_dir = output_root.join(&run_id);
+    Ok(report)
+}
+
+fn write_publication_artifacts(
+    output_root: &Path,
+    run_id: &str,
+    report: &M4PublicationReport,
+) -> Result<()> {
+    let result_dir = output_root.join(run_id);
     fs::create_dir_all(&result_dir)?;
     write_json(result_dir.join("m4-publication.json"), &report)?;
     fs::write(
         result_dir.join("m4-publication.csv"),
-        render_publication_csv(&report),
+        render_publication_csv(report),
     )?;
     fs::write(
         result_dir.join("m4-comparison.csv"),
-        render_publication_summary_csv(&report),
+        render_publication_summary_csv(report),
     )?;
     fs::write(
         result_dir.join("m4-publication.md"),
-        render_publication_markdown(&report),
+        render_publication_markdown(report),
     )?;
+    Ok(())
+}
+
+pub fn run_m4_publication_workload(
+    output_root: &Path,
+    m4_report_path: &Path,
+    workload: M4ProgramId,
+) -> Result<M4PublicationWorkload> {
+    let _: M4BenchmarkReport = read_json(m4_report_path)?;
+    fs::create_dir_all(output_root)?;
+    let run_id = format!(
+        "m4-publication-{}-{}",
+        workload.name(),
+        command("date", &["-u", "+%Y%m%d-%H%M%SZ"])?
+    );
+    let input = representative_workloads()
+        .into_iter()
+        .find(|(candidate, _)| *candidate == workload)
+        .map(|(_, input)| input)
+        .ok_or_else(|| eyre!("unsupported M4 publication workload"))?;
+    let record = collect_m4_publication_workload(output_root, &run_id, workload, input)?;
+    write_json(
+        output_root.join(format!("m4-publication-{}.json", workload.name())),
+        &record,
+    )?;
+    Ok(record)
+}
+
+fn unavailable_publication_workload(
+    workload: M4ProgramId,
+    input: [u32; 2],
+    error: String,
+) -> Result<M4PublicationWorkload> {
+    let program = workload_program(workload.workload());
+    let reference_output = execute_reference(
+        &program,
+        &ExecutionInputV1::new(input.to_vec()),
+        workload.output_register(),
+    )? as u32;
+    let mut expected_output = [0u8; 32];
+    expected_output[..4].copy_from_slice(&reference_output.to_le_bytes());
+    let failed_side = M4PublicationSide {
+        error: Some(error),
+        ..M4PublicationSide::default()
+    };
+    Ok(M4PublicationWorkload {
+        name: workload.name().to_string(),
+        input,
+        reference_output_hex: hex(&expected_output),
+        pvm_instruction_count: program.instruction_count(),
+        translated_instruction_count: 0,
+        instruction_expansion_ratio: 0.0,
+        translation_ns: 0,
+        emission_ns: 0,
+        reference_execute_ns: None,
+        native: failed_side.clone(),
+        translated: failed_side,
+        ratios: M4PublicationRatios::default(),
+        fixed_cost_observation: M4FixedCostObservation::default(),
+        semantics_match: false,
+    })
+}
+
+pub fn aggregate_m4_publication(
+    output_root: &Path,
+    m4_report_path: &Path,
+    partial_paths: [&Path; 3],
+) -> Result<M4PublicationReport> {
+    let m4_report: M4BenchmarkReport = read_json(m4_report_path)?;
+    fs::create_dir_all(output_root)?;
+    let run_id = format!(
+        "m4-publication-{}",
+        command("date", &["-u", "+%Y%m%d-%H%M%SZ"])?
+    );
+    let workloads = representative_workloads()
+        .into_iter()
+        .zip(partial_paths)
+        .map(|((workload, input), path)| {
+            if path.exists() {
+                match read_json::<M4PublicationWorkload>(path) {
+                    Ok(record) if record.name == workload.name() => Ok(record),
+                    Ok(record) => unavailable_publication_workload(
+                        workload,
+                        input,
+                        format!("partial report names {}", record.name),
+                    ),
+                    Err(error) => unavailable_publication_workload(
+                        workload,
+                        input,
+                        format!("invalid or unreadable partial report: {error}"),
+                    ),
+                }
+            } else {
+                unavailable_publication_workload(
+                    workload,
+                    input,
+                    "publication workload artifact unavailable".to_string(),
+                )
+            }
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let report = publication_report(&m4_report, &run_id, workloads)?;
+    write_publication_artifacts(output_root, &run_id, &report)?;
+    Ok(report)
+}
+
+pub fn run_m4_publication(
+    output_root: &Path,
+    m4_report_path: &Path,
+) -> Result<M4PublicationReport> {
+    let m4_report: M4BenchmarkReport = read_json(m4_report_path)?;
+    fs::create_dir_all(output_root)?;
+    let run_id = format!(
+        "m4-publication-{}",
+        command("date", &["-u", "+%Y%m%d-%H%M%SZ"])?
+    );
+    let workloads = representative_workloads()
+        .into_iter()
+        .map(|(workload, input)| {
+            collect_m4_publication_workload(output_root, &run_id, workload, input)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let report = publication_report(&m4_report, &run_id, workloads)?;
+    write_publication_artifacts(output_root, &run_id, &report)?;
     Ok(report)
 }
 

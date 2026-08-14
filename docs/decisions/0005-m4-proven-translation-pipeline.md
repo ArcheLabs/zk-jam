@@ -52,9 +52,10 @@ program reuse, and the final publication gate. Local `bench m4` therefore
 requires `--execute-only`; full proving is a remote acceptance workflow.
 
 The publication benchmark is intentionally separate from this completion
-gate. `bench m4-publication` runs the three fixed representative workloads
-against direct Native OpenVM guests and generated translated guests on the
-same runner, preserving raw timings and chart-friendly CSV output. Its
-`complete/partial/unavailable` status cannot turn a correct M4 report into an
-incomplete one, and its single-sample ratios must not be presented as full JAM
-or Kusama performance claims.
+gate. The workflow matrix runs `bench m4-publication-workload` once per fixed
+representative workload; each job runs Native then translated on one runner.
+`aggregate-m4-publication` only reads the three partial reports and renders the
+raw timings and chart-friendly CSV output. Its `complete/partial/unavailable`
+status cannot turn a correct M4 report into an incomplete one, and its
+single-sample ratios must not be presented as full JAM or Kusama performance
+claims.
