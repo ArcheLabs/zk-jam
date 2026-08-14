@@ -136,7 +136,7 @@ pub fn emit_openvm_guest(
     let program_commitment = program.pvm_program_commitment;
     source.push_str("            _ => break,\n        }\n    }\n");
     source.push_str(&format!(
-        "    let mut input_hasher = Sha256::new();\n    input_hasher.update(b\"zk-jam/input/v1\");\n    input_hasher.update({TRANSLATION_VERSION}u32.to_le_bytes());\n    input_hasher.update(8u64.to_le_bytes());\n    input_hasher.update(input[0].to_le_bytes());\n    input_hasher.update(input[1].to_le_bytes());\n    let input_commitment: [u8; 32] = input_hasher.finalize().into();\n    let output = (regs[{output_register}] as u32).to_le_bytes();\n    let mut output_bytes = [0u8; 32];\n    output_bytes[..4].copy_from_slice(&output);\n    let mut public_values = [0u8; 96];\n    public_values[..32].copy_from_slice(&{program_commitment:?});\n    public_values[32..64].copy_from_slice(&input_commitment);\n    public_values[64..].copy_from_slice(&output_bytes);\n    for (index, chunk) in public_values.chunks_exact(4).enumerate() {{\n        reveal_u32(u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]), index);\n    }}\n}}\n"
+        "    let mut input_hasher = Sha256::new();\n    input_hasher.update(b\"zk-jam/input/v1\");\n    input_hasher.update({TRANSLATION_VERSION}u32.to_le_bytes());\n    input_hasher.update(8u64.to_le_bytes());\n    input_hasher.update(input[0].to_le_bytes());\n    input_hasher.update(input[1].to_le_bytes());\n    let input_commitment: [u8; 32] = input_hasher.finalize().into();\n    let output = (regs[{output_register}] as u32).to_le_bytes();\n    let mut output_bytes = [0u8; 32];\n    output_bytes[..4].copy_from_slice(&output);\n    let mut public_values = [0u8; 128];\n    public_values[..32].copy_from_slice(&{program_commitment:?});\n    public_values[32..64].copy_from_slice(&input_commitment);\n    public_values[64..96].copy_from_slice(&output_bytes);\n    for (index, chunk) in public_values.chunks_exact(4).enumerate() {{\n        reveal_u32(u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]), index);\n    }}\n}}\n"
     ));
     source = source.replacen(
         "input_hasher.update(8u64.to_le_bytes());\n    input_hasher.update(input[0].to_le_bytes());\n    input_hasher.update(input[1].to_le_bytes());",
@@ -1317,7 +1317,7 @@ mod tests {
             .contains("input_hasher.update(2u32.to_le_bytes());"));
         assert!(emitted_a
             .source
-            .contains("let mut public_values = [0u8; 96];"));
+            .contains("let mut public_values = [0u8; 128];"));
         assert!(emitted_a.source.contains("reveal_u32"));
         assert!(!emitted_a.source.contains("reveal_bytes32"));
         assert!(emitted_a.source.contains("wrapping_add"));

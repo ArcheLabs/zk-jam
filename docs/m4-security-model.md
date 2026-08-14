@@ -17,10 +17,12 @@ commitment. The verifier recomputes the same canonical commitment and compares
 it with the proof public value. Golden vectors include distinct inputs,
 zeroes, and `u32::MAX` to prevent host/guest encoding drift.
 
-The proof public-values parser is exact: bytes `0..32` are the program
-commitment, `32..64` the input commitment, and `64..96` the output; any length
-other than 96 is rejected. Execute-only preflight and proof verification use
-this parser rather than positional truncation or optional slices.
+The semantic statement parser is exact: bytes `0..32` are the program
+commitment, `32..64` the input commitment, and `64..96` the output. The OpenVM
+envelope is exactly 128 bytes; bytes `96..128` are reserved and must all be
+zero. Any other length or non-zero padding is rejected. Execute-only preflight
+and proof verification use this parser rather than positional truncation or
+optional slices.
 
 The output is also taken from the parsed proof public values and compared with
 the independent bounded reference executor. Tampering with proof bytes, program

@@ -34,7 +34,7 @@
         "emission_ns": {"type": "integer", "minimum": 0},
         "build_ns": {"type": "integer", "minimum": 0},
         "transpile_ns": {"type": "integer", "minimum": 0},
-        "public_values_len": {"const": 96},
+        "public_values_len": {"const": 128},
         "execute_ns": {"type": "integer", "minimum": 0},
         "program_binding_verified": {"type": "boolean"},
         "input_binding_verified": {"type": "boolean"},

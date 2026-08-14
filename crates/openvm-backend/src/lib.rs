@@ -23,6 +23,9 @@ pub const OPENVM_REVISION: &str = "b820b25baab6c5d9b055f64e0286b6b1058e707c";
 pub const OPENVM_BACKEND: &str = "cpu";
 pub const OPENVM_PINNED_GUEST_TOOLCHAIN: &str = "nightly-2026-01-18";
 pub const ARITHMETIC_FIXED_XOR: u32 = 0xA5A5_5A5A;
+pub const M4_SEMANTIC_PUBLIC_VALUES_LEN: usize = 96;
+pub const M4_OPENVM_PUBLIC_VALUES_LEN: usize = 128;
+pub const M4_PUBLIC_VALUES_MERKLE_CHUNK_BYTES: usize = 8;
 
 type OpenVmSdk = Sdk;
 pub type OpenVmVerifyingKey = MultiStarkVerifyingKey<openvm_sdk::SC>;
@@ -220,36 +223,67 @@ pub struct M4PublicValuesV1 {
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum M4PublicValuesError {
-    #[error("M4 public values must be exactly 96 bytes, got {0}")]
+    #[error("M4 semantic public values must be exactly 96 bytes, got {0}")]
     InvalidLength(usize),
+    #[error("M4 OpenVM public values must be exactly 128 bytes, got {0}")]
+    InvalidOpenVmLength(usize),
+    #[error("M4 OpenVM public values contain non-zero reserved padding")]
+    NonZeroPadding,
 }
 
 impl M4PublicValuesV1 {
-    pub const LEN: usize = 96;
+    pub const SEMANTIC_LEN: usize = M4_SEMANTIC_PUBLIC_VALUES_LEN;
+    pub const OPENVM_LEN: usize = M4_OPENVM_PUBLIC_VALUES_LEN;
+    pub const LEN: usize = Self::SEMANTIC_LEN;
 
-    pub fn encode(&self) -> [u8; Self::LEN] {
-        let mut bytes = [0u8; Self::LEN];
+    pub fn encode(&self) -> [u8; M4_SEMANTIC_PUBLIC_VALUES_LEN] {
+        let mut bytes = [0u8; M4_SEMANTIC_PUBLIC_VALUES_LEN];
         bytes[..32].copy_from_slice(&self.program_commitment);
         bytes[32..64].copy_from_slice(&self.input_commitment);
         bytes[64..].copy_from_slice(&self.output);
         bytes
     }
 
+    pub fn encode_openvm(&self) -> [u8; M4_OPENVM_PUBLIC_VALUES_LEN] {
+        let mut bytes = [0u8; M4_OPENVM_PUBLIC_VALUES_LEN];
+        bytes[..M4_SEMANTIC_PUBLIC_VALUES_LEN].copy_from_slice(&self.encode());
+        bytes
+    }
+
     pub fn decode(bytes: &[u8]) -> Result<Self, M4PublicValuesError> {
-        if bytes.len() != Self::LEN {
+        if bytes.len() != M4_SEMANTIC_PUBLIC_VALUES_LEN {
             return Err(M4PublicValuesError::InvalidLength(bytes.len()));
         }
+        Ok(Self::decode_semantic_bytes(bytes))
+    }
+
+    pub fn decode_openvm(bytes: &[u8]) -> Result<Self, M4PublicValuesError> {
+        if bytes.len() != M4_OPENVM_PUBLIC_VALUES_LEN {
+            return Err(M4PublicValuesError::InvalidOpenVmLength(bytes.len()));
+        }
+        if bytes[M4_SEMANTIC_PUBLIC_VALUES_LEN..]
+            .iter()
+            .any(|byte| *byte != 0)
+        {
+            return Err(M4PublicValuesError::NonZeroPadding);
+        }
+        Ok(Self::decode_semantic_bytes(
+            &bytes[..M4_SEMANTIC_PUBLIC_VALUES_LEN],
+        ))
+    }
+
+    fn decode_semantic_bytes(bytes: &[u8]) -> Self {
         let mut program_commitment = [0u8; 32];
         let mut input_commitment = [0u8; 32];
         let mut output = [0u8; 32];
         program_commitment.copy_from_slice(&bytes[..32]);
         input_commitment.copy_from_slice(&bytes[32..64]);
         output.copy_from_slice(&bytes[64..]);
-        Ok(Self {
+        Self {
             program_commitment,
             input_commitment,
             output,
-        })
+        }
     }
 }
 
@@ -293,10 +327,10 @@ impl M4ProofArtifact {
             input_commitment: expected.input_commitment,
             output: expected.public_output,
         };
-        let actual_public_values = M4PublicValuesV1::decode(&self.proof.public_output)
+        let actual_public_values = M4PublicValuesV1::decode_openvm(&self.proof.public_output)
             .map_err(|error| eyre!("decode M4 proof public values: {error}"))?;
         if actual_public_values != expected_public_values
-            || self.proof.public_output != expected_public_values.encode()
+            || self.proof.public_output != expected_public_values.encode_openvm()
         {
             return Err(eyre!("M4 proof public values mismatch"));
         }
@@ -584,7 +618,7 @@ fn sdk_for_benchmark(benchmark: &M2Benchmark) -> OpenVmSdk {
             .system
             .config
             .clone()
-            .with_public_values(M4PublicValuesV1::LEN);
+            .with_public_values(M4_OPENVM_PUBLIC_VALUES_LEN);
         return Sdk::new(app_config, AggregationSystemParams::default())
             .expect("valid M4 OpenVM SDK configuration");
     }
@@ -705,6 +739,31 @@ mod tests {
         assert_ne!(M4PublicValuesV1::decode(&tampered).unwrap(), values);
         tampered[64] ^= 1;
         assert_ne!(M4PublicValuesV1::decode(&tampered).unwrap(), values);
+
+        assert_eq!(M4_OPENVM_PUBLIC_VALUES_LEN, 128);
+        assert_eq!(M4_SEMANTIC_PUBLIC_VALUES_LEN, 96);
+        assert_eq!(
+            M4_OPENVM_PUBLIC_VALUES_LEN % M4_PUBLIC_VALUES_MERKLE_CHUNK_BYTES,
+            0
+        );
+        assert!(
+            (M4_OPENVM_PUBLIC_VALUES_LEN / M4_PUBLIC_VALUES_MERKLE_CHUNK_BYTES).is_power_of_two()
+        );
+        let openvm = values.encode_openvm();
+        assert_eq!(openvm.len(), 128);
+        assert_eq!(M4PublicValuesV1::decode_openvm(&openvm).unwrap(), values);
+        let mut short = openvm.to_vec();
+        short.pop();
+        assert!(M4PublicValuesV1::decode_openvm(&short).is_err());
+        let mut long = openvm.to_vec();
+        long.push(0);
+        assert!(M4PublicValuesV1::decode_openvm(&long).is_err());
+        let mut non_zero_padding = openvm;
+        non_zero_padding[96] = 1;
+        assert!(matches!(
+            M4PublicValuesV1::decode_openvm(&non_zero_padding),
+            Err(M4PublicValuesError::NonZeroPadding)
+        ));
     }
 
     #[test]

@@ -28,10 +28,11 @@ the PVM program commitment includes the translation version and canonical
 `PvmProgramV1`; the input commitment includes the translation version and the
 canonical two-word `ExecutionInputV1`. The guest consumes both witness words,
 encodes `u32 word_count || little-endian words` inside the versioned commitment
-envelope, and reveals program commitment, input commitment, and output as
-exactly 96 OpenVM public-value bytes. The verifier uses the strict
-`M4PublicValuesV1` parser and checks those values against the expected
-statement in addition to verifying the OpenVM proof.
+envelope, and reveals a 128-byte OpenVM public-values envelope. The first 96
+bytes contain the program commitment, input commitment, and output; the final
+32 bytes are reserved zero padding required by OpenVM's pinned Merkle layout.
+The verifier uses the strict `M4PublicValuesV1` parser and checks those values
+against the expected statement in addition to verifying the OpenVM proof.
 
 The M4 smoke covers arithmetic with two inputs, branch true/false/equal, and
 16 KiB memory. Unsupported opcodes and unsupported control flow fail closed.
