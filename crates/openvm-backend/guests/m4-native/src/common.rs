@@ -28,7 +28,7 @@ pub fn reveal_statement(program: [u8; 32], a: u32, b: u32, output: u32) {
     hasher.update(a.to_le_bytes());
     hasher.update(b.to_le_bytes());
     let input_commitment: [u8; 32] = hasher.finalize().into();
-    let mut public_values = [0u8; 96];
+    let mut public_values = [0u8; 128];
     public_values[..32].copy_from_slice(&program);
     public_values[32..64].copy_from_slice(&input_commitment);
     public_values[64..68].copy_from_slice(&output.to_le_bytes());

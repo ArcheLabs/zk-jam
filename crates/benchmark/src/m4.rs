@@ -93,7 +93,7 @@ pub fn validate_m4_preflight_report(report_path: &Path, schema_path: &Path) -> R
                 && case.program_binding_verified
                 && case.input_binding_verified
                 && case.output_matches_reference
-                && case.public_values_len == M4PublicValuesV1::LEN
+                && case.public_values_len == M4PublicValuesV1::OPENVM_LEN
         });
     if typed.complete != complete {
         return Err(eyre!("M4 preflight complete does not match case semantics"));
@@ -502,7 +502,7 @@ pub fn run_m4_preflight(output_root: &Path, jambda_repo: &Path) -> Result<M4Pref
         let execute_started = Instant::now();
         let execution = backend.execute(&program.artifact, m2_input)?;
         let execute_ns = execute_started.elapsed().as_nanos();
-        let public_values = M4PublicValuesV1::decode(&execution.public_output)?;
+        let public_values = M4PublicValuesV1::decode_openvm(&execution.public_output)?;
         let program_ok = public_values.program_commitment == program_commitment(&program.program);
         let input_ok = public_values.input_commitment == input_commit;
         let output_ok = public_values.output == expected_output;
@@ -714,11 +714,11 @@ pub fn run_m4_publication_worker(
     let execute_started = Instant::now();
     let execution = backend.execute_prepared(&prepared, M2Input::arithmetic(input[0], input[1]))?;
     let execute_ns = execute_started.elapsed().as_nanos();
-    let execution_values = M4PublicValuesV1::decode(&execution.public_output)?;
+    let execution_values = M4PublicValuesV1::decode_openvm(&execution.public_output)?;
     let prove_started = Instant::now();
     let proof = backend.prove_prepared(&prepared, M2Input::arithmetic(input[0], input[1]))?;
     let prove_ns = prove_started.elapsed().as_nanos();
-    let proof_values = M4PublicValuesV1::decode(&proof.public_output)?;
+    let proof_values = M4PublicValuesV1::decode_openvm(&proof.public_output)?;
     let artifact = M4ProofArtifact {
         schema_version: 1,
         program_commitment: pvm_commitment,
@@ -844,7 +844,7 @@ fn collect_m4_publication_workload(
     let semantics_match = sides.iter().all(|side| {
         side.proof_verified
             && side.error.is_none()
-            && side.public_values_len == Some(M4PublicValuesV1::LEN)
+            && side.public_values_len == Some(M4PublicValuesV1::OPENVM_LEN)
             && side.output_hex.as_deref() == Some(expected_hex.as_str())
     }) && sides[0].output_hex == sides[1].output_hex;
     let translated = &sides[1];
@@ -1390,7 +1390,7 @@ fn render_publication_markdown(report: &M4PublicationReport) -> String {
             workload.instruction_expansion_ratio
         ));
     }
-    output.push_str("\n## Claims boundary\n\nM4 demonstrates that a bounded PVM subset can be deterministically translated into the actual OpenVM executable being proved, with program identity, runtime input, and output bound into the proof public statement. The native comparison is a direct OpenVM guest baseline with the same 96-byte public-values envelope; its embedded program commitment keeps the envelope comparable but does not provide M4 mechanical translation binding.\n\nThese single-sample diagnostic measurements do not demonstrate full JAM Refine, Refine Host Calls, sub-VM, full PVM coverage, production proving performance, or Kusama integration.\n");
+    output.push_str("\n## Claims boundary\n\nM4 demonstrates that a bounded PVM subset can be deterministically translated into the actual OpenVM executable being proved, with program identity, runtime input, and output bound into the proof public statement. The native comparison is a direct OpenVM guest baseline with the same 128-byte OpenVM public-values envelope; the final 32 bytes are reserved zero padding. Its embedded program commitment keeps the envelope comparable but does not provide M4 mechanical translation binding.\n\nThese single-sample diagnostic measurements do not demonstrate full JAM Refine, Refine Host Calls, sub-VM, full PVM coverage, production proving performance, or Kusama integration.\n");
     output
 }
 
@@ -1439,7 +1439,7 @@ pub fn run_m4_proof_program(
         let execute_started = Instant::now();
         let execution = backend.execute_prepared(&prepared, m2_input)?;
         let execute_ns = execute_started.elapsed().as_nanos();
-        let execution_values = M4PublicValuesV1::decode(&execution.public_output)?;
+        let execution_values = M4PublicValuesV1::decode_openvm(&execution.public_output)?;
         let prove_started = Instant::now();
         println!("[M4][{}][{}] prove started", program_id.name(), case.name);
         let proof = backend.prove_prepared(&prepared, m2_input)?;
@@ -1450,7 +1450,7 @@ pub fn run_m4_proof_program(
             case.name,
             prove_ns as f64 / 1_000_000_000.0
         );
-        let proof_values = M4PublicValuesV1::decode(&proof.public_output)?;
+        let proof_values = M4PublicValuesV1::decode_openvm(&proof.public_output)?;
         let program_binding_verified = proof_values.program_commitment == pvm_commitment
             && execution_values.program_commitment == pvm_commitment;
         let input_binding_verified = proof_values.input_commitment == input_commit
@@ -1771,8 +1771,8 @@ pub fn run_m4(
         let input_commit = input_commitment(&input);
         let mut expected_output = [0u8; 32];
         expected_output[..4].copy_from_slice(&reference_output.to_le_bytes());
-        let execution_values = M4PublicValuesV1::decode(&execution.public_output)?;
-        let proof_values = M4PublicValuesV1::decode(&proof.public_output)?;
+        let execution_values = M4PublicValuesV1::decode_openvm(&execution.public_output)?;
+        let proof_values = M4PublicValuesV1::decode_openvm(&proof.public_output)?;
         let proof_program_ok = proof_values.program_commitment == pvm_commitment;
         let proof_input_ok = proof_values.input_commitment == input_commit;
         let proven_output = proof_values.output;

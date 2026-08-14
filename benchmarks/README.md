@@ -41,7 +41,8 @@ Validate a report with `zk-jam bench validate-m3 path/to/m3-benchmark.json`.
 M4 local validation uses `zk-jam bench m4 --execute-only --jambda-repo /path/to/jambda
 --samples 1 --warmup 0` and emits an `m4-preflight-v1` JSON/Markdown pair. The
 preflight checks translation, emission, build/transpile, execution, the strict
-96-byte public-values layout, and all six reference-output comparisons.
+128-byte OpenVM public-values envelope (96-byte semantic statement plus
+zero-padding), and all six reference-output comparisons.
 
 The remote proof workflow runs `zk-jam bench m4-proof --program arithmetic|branch|memory`
 once per generated executable, then combines the three `m4-proof-partial-v1`
@@ -73,8 +74,9 @@ it performs no proving. The partial artifacts are named
 
 The comparison uses direct Native OpenVM guests and generated translated guests
 for arithmetic `[7, 9]`, branch-true `[21, 8]`, and 16 KiB memory
-`[0x12345678, 16384]`. Both sides use the same 96-byte public-values envelope,
-runtime input encoding, OpenVM configuration, and runner. Build/transpile,
+`[0x12345678, 16384]`. Both sides use the same 128-byte OpenVM public-values
+envelope (96-byte semantic statement plus 32 zero-padding bytes), runtime input
+encoding, OpenVM configuration, and runner. Build/transpile,
 keygen, and translation/emission are preparation or per-program costs;
 execute/prove/verify are per-execution observations. Ratios are always
 `translated / native`, while `reference_execute_ns` is informational only.
