@@ -23,3 +23,17 @@ PvmProgramV1 → validate → translate() → TranslatedProgramV1
 The generated guest consumes runtime input and reveals program commitment,
 input commitment, and output as proof public values. Full Refine remains a
 later milestone.
+
+M4 correctness closeout uses a strict public-values contract: 32 bytes for the
+program commitment, 32 for the canonical input commitment, and 32 for the
+output. Local execution is a six-case preflight. Remote CI performs one
+program-specific proof job for arithmetic, branch, and bounded memory in
+parallel, followed by a metadata- and binding-checked aggregate report.
+
+M4.0.2 adds an independent publication comparison after that correctness gate:
+three direct Native OpenVM guests are run against the generated translated
+guests on the same runner, with the same 96-byte public-values envelope and
+runtime inputs. Translation/emission and per-program preparation costs are
+reported separately from per-execution proof ratios. The Native guest's
+embedded PVM commitment exists only for envelope comparability; it is not
+mechanical translation binding.

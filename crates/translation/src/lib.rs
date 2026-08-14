@@ -60,6 +60,17 @@ pub fn input_commitment(input: &ExecutionInputV1) -> [u8; 32] {
     commitment(INPUT_COMMITMENT_DOMAIN, &input.encode_canonical())
 }
 
+/// Independent byte-for-byte model of the input encoding emitted into the generated Guest.
+/// Keeping this separate from `input_commitment` makes commitment drift observable in tests.
+pub fn guest_equivalent_input_commitment(input: &ExecutionInputV1) -> [u8; 32] {
+    let mut payload = Vec::with_capacity(4 + input.words.len() * 4);
+    payload.extend_from_slice(&(input.words.len() as u32).to_le_bytes());
+    for word in &input.words {
+        payload.extend_from_slice(&word.to_le_bytes());
+    }
+    commitment(INPUT_COMMITMENT_DOMAIN, &payload)
+}
+
 pub fn translated_program_commitment(program: &TranslatedProgramV1) -> [u8; 32] {
     commitment(TRANSLATED_PROGRAM_DOMAIN, &program.encode_canonical())
 }
@@ -83,7 +94,7 @@ pub fn emit_openvm_guest(
         ));
     }
     let mut source = String::from(
-        "#![no_main]\nuse openvm::io::{read, reveal_bytes32};\nuse sha2::{Digest, Sha256};\n\nopenvm::entry!(main);\n\nfn main() {\n    let input: [u32; 2] = read();\n    let mut regs = [0u64; 13];\n    regs[1] = input[0] as u64;\n    regs[2] = input[1] as u64;\n    let mut memory = [0u32; 4096];\n    let mut block = 0usize;\n    loop {\n        match block {\n",
+        "#![no_main]\nuse openvm::io::{read, reveal_u32};\nuse sha2::{Digest, Sha256};\n\nopenvm::entry!(main);\n\nfn main() {\n    let input: [u32; 2] = read();\n    let mut regs = [0u64; 13];\n    regs[1] = input[0] as u64;\n    regs[2] = input[1] as u64;\n    let mut memory = [0u32; 4096];\n    let mut block = 0usize;\n    loop {\n        match block {\n",
     );
     source = source.replacen("#![no_main]\n", "", 1);
     source = source.replacen("\nfn main()", "\npub fn main()", 1);
@@ -125,8 +136,13 @@ pub fn emit_openvm_guest(
     let program_commitment = program.pvm_program_commitment;
     source.push_str("            _ => break,\n        }\n    }\n");
     source.push_str(&format!(
-        "    let mut input_hasher = Sha256::new();\n    input_hasher.update(b\"zk-jam/input/v1\");\n    input_hasher.update({TRANSLATION_VERSION}u32.to_le_bytes());\n    input_hasher.update(8u64.to_le_bytes());\n    input_hasher.update(input[0].to_le_bytes());\n    input_hasher.update(input[1].to_le_bytes());\n    let input_commitment: [u8; 32] = input_hasher.finalize().into();\n    let output = (regs[{output_register}] as u32).to_le_bytes();\n    let mut output_bytes = [0u8; 32];\n    output_bytes[..4].copy_from_slice(&output);\n    reveal_bytes32({program_commitment:?});\n    reveal_bytes32(input_commitment);\n    reveal_bytes32(output_bytes);\n}}\n"
+        "    let mut input_hasher = Sha256::new();\n    input_hasher.update(b\"zk-jam/input/v1\");\n    input_hasher.update({TRANSLATION_VERSION}u32.to_le_bytes());\n    input_hasher.update(8u64.to_le_bytes());\n    input_hasher.update(input[0].to_le_bytes());\n    input_hasher.update(input[1].to_le_bytes());\n    let input_commitment: [u8; 32] = input_hasher.finalize().into();\n    let output = (regs[{output_register}] as u32).to_le_bytes();\n    let mut output_bytes = [0u8; 32];\n    output_bytes[..4].copy_from_slice(&output);\n    let mut public_values = [0u8; 96];\n    public_values[..32].copy_from_slice(&{program_commitment:?});\n    public_values[32..64].copy_from_slice(&input_commitment);\n    public_values[64..].copy_from_slice(&output_bytes);\n    for (index, chunk) in public_values.chunks_exact(4).enumerate() {{\n        reveal_u32(u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]), index);\n    }}\n}}\n"
     ));
+    source = source.replacen(
+        "input_hasher.update(8u64.to_le_bytes());\n    input_hasher.update(input[0].to_le_bytes());\n    input_hasher.update(input[1].to_le_bytes());",
+        "input_hasher.update(12u64.to_le_bytes());\n    input_hasher.update(2u32.to_le_bytes());\n    input_hasher.update(input[0].to_le_bytes());\n    input_hasher.update(input[1].to_le_bytes());",
+        1,
+    );
     let mut hasher = Sha256::new();
     hasher.update(source.as_bytes());
     Ok(EmittedGuest {
@@ -969,6 +985,9 @@ pub fn execute_reference(
         ));
     }
     let mut machine = PvmMachineV0::default();
+    for page in 1..u32::from(program.z_pages) {
+        machine.memory.map_zeroed_page(page, true)?;
+    }
     machine.registers[1] = input.words[0] as u64;
     machine.registers[2] = input.words[1] as u64;
     machine.run(program, output_register)
@@ -1290,6 +1309,17 @@ mod tests {
         assert_eq!(emitted_a, emitted_b);
         assert!(emitted_a.source.contains("let input_a: u32 = read();"));
         assert!(emitted_a.source.contains("let input_b: u32 = read();"));
+        assert!(emitted_a
+            .source
+            .contains("input_hasher.update(12u64.to_le_bytes());"));
+        assert!(emitted_a
+            .source
+            .contains("input_hasher.update(2u32.to_le_bytes());"));
+        assert!(emitted_a
+            .source
+            .contains("let mut public_values = [0u8; 96];"));
+        assert!(emitted_a.source.contains("reveal_u32"));
+        assert!(!emitted_a.source.contains("reveal_bytes32"));
         assert!(emitted_a.source.contains("wrapping_add"));
         assert_ne!(
             input_commitment(&ExecutionInputV1::new(vec![7, 9])),
@@ -1301,6 +1331,27 @@ mod tests {
         assert_eq!(
             execute_reference(&program, &ExecutionInputV1::new(vec![10, 20]), 7).unwrap() as u32,
             (10u32.wrapping_add(20).wrapping_mul(3)) ^ 0xA5A5_5A5A
+        );
+    }
+
+    #[test]
+    fn m4_input_commitment_golden_and_guest_equivalent() {
+        let cases = [[7, 9], [7, 10], [0, 0], [u32::MAX, 1]];
+        for words in cases {
+            let input = ExecutionInputV1::new(words.to_vec());
+            assert_eq!(
+                input_commitment(&input),
+                guest_equivalent_input_commitment(&input)
+            );
+        }
+        let golden = input_commitment(&ExecutionInputV1::new(vec![7, 9]));
+        let golden_hex = golden
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        assert_eq!(
+            golden_hex,
+            "7f25011b844553125d501fb2b2c69c678399188c03c8864b7b9e0229e2c23be8"
         );
     }
 

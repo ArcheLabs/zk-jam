@@ -9,7 +9,7 @@ use blake2b_simd::Params;
 use eyre::{eyre, Result, WrapErr};
 use openvm_build::{GuestOptions, TargetFilter};
 use openvm_sdk::{
-    config::AggregationSystemParams,
+    config::{AggregationSystemParams, AppConfig},
     types::{ExecutableFormat, VerificationBaselineJson, VersionedVmStarkProof},
     Sdk, StdIn,
 };
@@ -17,7 +17,6 @@ use openvm_stark_backend::{keygen::types::MultiStarkVerifyingKey, p3_field::Prim
 use openvm_stark_sdk::config::{app_params_with_100_bits_security, MAX_APP_LOG_STACKED_HEIGHT};
 use openvm_verify_stark_host::VmStarkProof;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 pub const OPENVM_VERSION: &str = "2.0.1";
 pub const OPENVM_REVISION: &str = "b820b25baab6c5d9b055f64e0286b6b1058e707c";
@@ -37,6 +36,12 @@ pub enum M2Benchmark {
     M3TranslationArithmetic,
     M3TranslationBranchTrue,
     M3TranslationMemory16K,
+    M4GeneratedArithmetic,
+    M4GeneratedBranch,
+    M4GeneratedMemory16K,
+    M4NativeArithmetic,
+    M4NativeBranch,
+    M4NativeMemory16K,
 }
 
 impl M2Benchmark {
@@ -48,6 +53,12 @@ impl M2Benchmark {
             Self::M3TranslationArithmetic => "m3-translation-arithmetic",
             Self::M3TranslationBranchTrue => "m3-translation-branch-true",
             Self::M3TranslationMemory16K => "m3-translation-memory-16384",
+            Self::M4GeneratedArithmetic => "m4-generated-arithmetic",
+            Self::M4GeneratedBranch => "m4-generated-branch",
+            Self::M4GeneratedMemory16K => "m4-generated-memory-16384",
+            Self::M4NativeArithmetic => "m4-native-arithmetic",
+            Self::M4NativeBranch => "m4-native-branch",
+            Self::M4NativeMemory16K => "m4-native-memory-16384",
         }
     }
 
@@ -57,6 +68,9 @@ impl M2Benchmark {
             Self::M3TranslationArithmetic => "m3-translation-arithmetic".to_string(),
             Self::M3TranslationBranchTrue => "m3-translation-branch-true".to_string(),
             Self::M3TranslationMemory16K => "m3-translation-memory-16384".to_string(),
+            Self::M4GeneratedArithmetic => "m4-generated-arithmetic".to_string(),
+            Self::M4GeneratedBranch => "m4-generated-branch".to_string(),
+            Self::M4GeneratedMemory16K => "m4-generated-memory-16384".to_string(),
             _ => self.name().to_string(),
         }
     }
@@ -69,6 +83,12 @@ impl M2Benchmark {
             Self::M3TranslationArithmetic => "m3-translation-arithmetic-v1",
             Self::M3TranslationBranchTrue => "m3-translation-branch-v1",
             Self::M3TranslationMemory16K => "m3-translation-memory-v1",
+            Self::M4GeneratedArithmetic | Self::M4GeneratedBranch | Self::M4GeneratedMemory16K => {
+                "m4-generated-v1"
+            }
+            Self::M4NativeArithmetic => "m4-native-arithmetic-v1",
+            Self::M4NativeBranch => "m4-native-branch-v1",
+            Self::M4NativeMemory16K => "m4-native-memory-16384-v1",
         }
     }
 }
@@ -105,6 +125,8 @@ impl OpenVmProgramArtifact {
 /// A program with OpenVM proving and verification keys prepared once for reuse.
 pub struct OpenVmPreparedProgram {
     pub program: OpenVmProgramArtifact,
+    pub app_keygen_time_ns: u128,
+    pub agg_keygen_time_ns: u128,
     pub keygen_time_ns: u128,
     sdk: OpenVmSdk,
     agg_vk: OpenVmVerifyingKey,
@@ -186,7 +208,49 @@ impl OpenVmProofArtifact {
 pub struct M4ExpectedStatement {
     pub program_commitment: [u8; 32],
     pub input_commitment: [u8; 32],
-    pub public_output: Vec<u8>,
+    pub public_output: [u8; 32],
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct M4PublicValuesV1 {
+    pub program_commitment: [u8; 32],
+    pub input_commitment: [u8; 32],
+    pub output: [u8; 32],
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum M4PublicValuesError {
+    #[error("M4 public values must be exactly 96 bytes, got {0}")]
+    InvalidLength(usize),
+}
+
+impl M4PublicValuesV1 {
+    pub const LEN: usize = 96;
+
+    pub fn encode(&self) -> [u8; Self::LEN] {
+        let mut bytes = [0u8; Self::LEN];
+        bytes[..32].copy_from_slice(&self.program_commitment);
+        bytes[32..64].copy_from_slice(&self.input_commitment);
+        bytes[64..].copy_from_slice(&self.output);
+        bytes
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, M4PublicValuesError> {
+        if bytes.len() != Self::LEN {
+            return Err(M4PublicValuesError::InvalidLength(bytes.len()));
+        }
+        let mut program_commitment = [0u8; 32];
+        let mut input_commitment = [0u8; 32];
+        let mut output = [0u8; 32];
+        program_commitment.copy_from_slice(&bytes[..32]);
+        input_commitment.copy_from_slice(&bytes[32..64]);
+        output.copy_from_slice(&bytes[64..]);
+        Ok(Self {
+            program_commitment,
+            input_commitment,
+            output,
+        })
+    }
 }
 
 /// M4 application statement wrapped around the normal OpenVM proof artifact. The three public
@@ -197,7 +261,7 @@ pub struct M4ProofArtifact {
     pub schema_version: u32,
     pub program_commitment: [u8; 32],
     pub input_commitment: [u8; 32],
-    pub public_output: Vec<u8>,
+    pub public_output: [u8; 32],
     pub proof: OpenVmProofArtifact,
 }
 
@@ -220,47 +284,25 @@ impl M4ProofArtifact {
         {
             return Err(eyre!("M4 expected statement mismatch"));
         }
-        if self.input_commitment != m4_input_commitment(input) {
+        let canonical_input = zk_jam_translation::ExecutionInputV1::new(vec![input.a, input.b]);
+        if self.input_commitment != zk_jam_translation::input_commitment(&canonical_input) {
             return Err(eyre!("M4 input commitment does not match supplied input"));
         }
-        let public_values = m4_public_values(
-            &self.program_commitment,
-            &self.input_commitment,
-            &self.public_output,
-        );
-        if self.proof.public_output != public_values {
+        let expected_public_values = M4PublicValuesV1 {
+            program_commitment: expected.program_commitment,
+            input_commitment: expected.input_commitment,
+            output: expected.public_output,
+        };
+        let actual_public_values = M4PublicValuesV1::decode(&self.proof.public_output)
+            .map_err(|error| eyre!("decode M4 proof public values: {error}"))?;
+        if actual_public_values != expected_public_values
+            || self.proof.public_output != expected_public_values.encode()
+        {
             return Err(eyre!("M4 proof public values mismatch"));
         }
         self.proof
             .verify(&input.context_hash(&self.proof.benchmark))
     }
-}
-
-/// Host-side mirror of the generated guest's canonical two-word input commitment. Keeping this
-/// check here prevents a caller from verifying a proof against an arbitrary expected commitment.
-pub fn m4_input_commitment(input: M2Input) -> [u8; 32] {
-    let mut hasher = Sha256::new();
-    hasher.update(b"zk-jam/input/v1");
-    hasher.update(1u32.to_le_bytes());
-    hasher.update(8u64.to_le_bytes());
-    hasher.update(input.a.to_le_bytes());
-    hasher.update(input.b.to_le_bytes());
-    hasher.finalize().into()
-}
-
-pub fn m4_public_values(
-    program_commitment: &[u8; 32],
-    input_commitment: &[u8; 32],
-    public_output: &[u8],
-) -> Vec<u8> {
-    let mut values = Vec::with_capacity(96);
-    values.extend_from_slice(program_commitment);
-    values.extend_from_slice(input_commitment);
-    let mut output = [0u8; 32];
-    output[..public_output.len().min(32)]
-        .copy_from_slice(&public_output[..public_output.len().min(32)]);
-    values.extend_from_slice(&output);
-    values
 }
 
 /// Small façade around OpenVM's official SDK flow.
@@ -344,14 +386,26 @@ impl OpenVmBackend {
         })
     }
 
+    pub fn m4_native_program(&self, benchmark: M2Benchmark) -> Result<OpenVmProgramArtifact> {
+        let guest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("guests/m4-native");
+        let binary = benchmark.guest_binary();
+        self.program_from_guest_dir(benchmark, &guest_dir, binary)
+    }
+
     /// Prepare OpenVM proving and verifying keys once for a program/configuration.
     pub fn prepare(&self, program: OpenVmProgramArtifact) -> Result<OpenVmPreparedProgram> {
-        let sdk = sdk();
+        let sdk = sdk_for_benchmark(&program.benchmark);
         let keygen_started = Instant::now();
+        let app_keygen_started = Instant::now();
         let _ = sdk.app_keygen();
+        let app_keygen_time_ns = app_keygen_started.elapsed().as_nanos();
+        let agg_keygen_started = Instant::now();
         let (_, agg_vk) = sdk.agg_keygen();
+        let agg_keygen_time_ns = agg_keygen_started.elapsed().as_nanos();
         Ok(OpenVmPreparedProgram {
             program,
+            app_keygen_time_ns,
+            agg_keygen_time_ns,
             keygen_time_ns: keygen_started.elapsed().as_nanos(),
             sdk,
             agg_vk,
@@ -364,7 +418,7 @@ impl OpenVmBackend {
         input: M2Input,
     ) -> Result<OpenVmExecutionResult> {
         let stdin = input.stdin();
-        let sdk = sdk();
+        let sdk = sdk_for_benchmark(&program.benchmark);
         let started = Instant::now();
         let public_output = sdk
             .execute(ExecutableFormat::SharedVmExe(program.exe.clone()), stdin)
@@ -513,6 +567,30 @@ fn sdk() -> OpenVmSdk {
     Sdk::riscv32(app_params, AggregationSystemParams::default())
 }
 
+fn sdk_for_benchmark(benchmark: &M2Benchmark) -> OpenVmSdk {
+    if matches!(
+        benchmark,
+        M2Benchmark::M4GeneratedArithmetic
+            | M2Benchmark::M4GeneratedBranch
+            | M2Benchmark::M4GeneratedMemory16K
+            | M2Benchmark::M4NativeArithmetic
+            | M2Benchmark::M4NativeBranch
+            | M2Benchmark::M4NativeMemory16K
+    ) {
+        let app_params = app_params_with_100_bits_security(MAX_APP_LOG_STACKED_HEIGHT);
+        let mut app_config = AppConfig::riscv32(app_params);
+        app_config.app_vm_config.system.config = app_config
+            .app_vm_config
+            .system
+            .config
+            .clone()
+            .with_public_values(M4PublicValuesV1::LEN);
+        return Sdk::new(app_config, AggregationSystemParams::default())
+            .expect("valid M4 OpenVM SDK configuration");
+    }
+    sdk()
+}
+
 fn guest_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("guests/m2")
 }
@@ -609,20 +687,24 @@ mod tests {
     }
 
     #[test]
-    fn m4_input_commitment_is_canonical_and_input_bound() {
-        assert_eq!(
-            m4_input_commitment(M2Input::arithmetic(7, 9)),
-            m4_input_commitment(M2Input::arithmetic(7, 9))
-        );
-        assert_ne!(
-            m4_input_commitment(M2Input::arithmetic(7, 9)),
-            m4_input_commitment(M2Input::arithmetic(7, 10))
-        );
-        assert_eq!(m4_public_values(&[1; 32], &[2; 32], &[3, 4])[..32], [1; 32]);
-        assert_eq!(
-            m4_public_values(&[1; 32], &[2; 32], &[3, 4])[32..64],
-            [2; 32]
-        );
+    fn m4_public_values_roundtrip_and_fail_closed() {
+        let values = M4PublicValuesV1 {
+            program_commitment: [1; 32],
+            input_commitment: [2; 32],
+            output: [3; 32],
+        };
+        assert_eq!(M4PublicValuesV1::decode(&values.encode()).unwrap(), values);
+        assert!(M4PublicValuesV1::decode(&values.encode()[..95]).is_err());
+        let mut oversized = values.encode().to_vec();
+        oversized.push(4);
+        assert!(M4PublicValuesV1::decode(&oversized).is_err());
+        let mut tampered = values.encode();
+        tampered[0] ^= 1;
+        assert_ne!(M4PublicValuesV1::decode(&tampered).unwrap(), values);
+        tampered[32] ^= 1;
+        assert_ne!(M4PublicValuesV1::decode(&tampered).unwrap(), values);
+        tampered[64] ^= 1;
+        assert_ne!(M4PublicValuesV1::decode(&tampered).unwrap(), values);
     }
 
     #[test]

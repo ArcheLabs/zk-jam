@@ -4703,8 +4703,8 @@ dependencies = [
  "openvm-verify-stark-host",
  "serde",
  "serde_json",
- "sha2",
  "thiserror 2.0.20",
+ "zk-jam-translation",
 ]
 
 [[package]]
