@@ -1,0 +1,435 @@
+name: Benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      milestone:
+        description: Benchmark milestone
+        required: true
+        default: m2
+        type: choice
+        options:
+          - m2
+          - m3
+          - m4
+      samples:
+        description: Measured samples per case
+        required: true
+        default: "5"
+        type: string
+      warmup:
+        description: Excluded warmup samples per case
+        required: true
+        default: "1"
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  OPENVM_RUST_TOOLCHAIN: nightly-2026-01-18
+
+jobs:
+  m2:
+    if: inputs.milestone == 'm2'
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install pinned OpenVM guest toolchain
+        run: rustup toolchain install nightly-2026-01-18 --profile minimal --component rust-src
+      - name: Validate benchmark inputs
+        env:
+          SAMPLES: ${{ inputs.samples }}
+          WARMUP: ${{ inputs.warmup }}
+        run: |
+          if ! [[ "$SAMPLES" =~ ^[1-9][0-9]*$ ]]; then
+            echo "samples must be a positive integer" >&2
+            exit 1
+          fi
+          if ! [[ "$WARMUP" =~ ^[0-9]+$ ]]; then
+            echo "warmup must be a non-negative integer" >&2
+            exit 1
+          fi
+      - name: Build release binary
+        run: cargo build --release -p zk-jam
+      - name: Run OpenVM proof and tamper acceptance test
+        run: cargo test -p zk-jam-openvm-backend m2_proof_round_trip_and_tamper_matrix --release -- --ignored --nocapture
+      - name: Run complete M2 benchmark
+        env:
+          SAMPLES: ${{ inputs.samples }}
+          WARMUP: ${{ inputs.warmup }}
+        run: |
+          cargo run --release -p zk-jam -- \
+            bench m2 \
+            --backend cpu \
+            --samples "$SAMPLES" \
+            --warmup "$WARMUP" \
+            --output benchmarks/results
+      - name: Locate benchmark result
+        id: result
+        run: |
+          result_dir="$(find benchmarks/results -mindepth 1 -maxdepth 1 -type d | sort | tail -n 1)"
+          test -n "$result_dir"
+          echo "dir=$result_dir" >> "$GITHUB_OUTPUT"
+      - name: Upload benchmark artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: m2-benchmark-${{ github.run_id }}
+          if-no-files-found: error
+          path: |
+            ${{ steps.result.outputs.dir }}/environment.json
+            ${{ steps.result.outputs.dir }}/runs.jsonl
+            ${{ steps.result.outputs.dir }}/summary.json
+            ${{ steps.result.outputs.dir }}/summary.csv
+            ${{ steps.result.outputs.dir }}/report.md
+      - name: Publish report to job summary
+        run: cat "${{ steps.result.outputs.dir }}/report.md" >> "$GITHUB_STEP_SUMMARY"
+      - name: Enforce publication readiness
+        run: |
+          test "$(jq -r '.cases | length' "${{ steps.result.outputs.dir }}/summary.json")" = "7"
+          test "$(jq -r '.publication_ready' "${{ steps.result.outputs.dir }}/summary.json")" = "true"
+
+  m3:
+    if: inputs.milestone == 'm3'
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout zk-jam
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install pinned OpenVM guest toolchain
+        run: rustup toolchain install nightly-2026-01-18 --profile minimal --component rust-src
+      - name: Read pinned Jambda manifest
+        id: jambda
+        run: |
+          repository="$(jq -er '.repository' integration/jambda-m3.json)"
+          revision="$(jq -er '.revision' integration/jambda-m3.json)"
+          [[ "$revision" =~ ^[0-9a-fA-F]{40}$ ]]
+          echo "repository=$repository" >> "$GITHUB_OUTPUT"
+          echo "revision=$revision" >> "$GITHUB_OUTPUT"
+      - name: Require Jambda read token
+        env:
+          JAMBDA_READ_TOKEN: ${{ secrets.JAMBDA_READ_TOKEN }}
+        run: test -n "$JAMBDA_READ_TOKEN"
+      - name: Checkout pinned Jambda
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.jambda.outputs.repository }}
+          ref: ${{ steps.jambda.outputs.revision }}
+          token: ${{ secrets.JAMBDA_READ_TOKEN }}
+          path: .m3-deps/jambda
+          persist-credentials: false
+      - name: Validate benchmark inputs
+        env:
+          SAMPLES: ${{ inputs.samples }}
+          WARMUP: ${{ inputs.warmup }}
+        run: |
+          [[ "$SAMPLES" =~ ^[1-9][0-9]*$ ]]
+          [[ "$WARMUP" =~ ^[0-9]+$ ]]
+      - name: Run M3 paired benchmark
+        env:
+          SAMPLES: ${{ inputs.samples }}
+          WARMUP: ${{ inputs.warmup }}
+        run: |
+          cargo run --release -p zk-jam -- bench m3 \
+            --samples "$SAMPLES" --warmup "$WARMUP" \
+            --jambda-repo .m3-deps/jambda --output benchmarks/results
+      - name: Locate M3 result
+        id: result
+        run: |
+          result_dir="$(find benchmarks/results -mindepth 1 -maxdepth 1 -type d | sort | tail -n 1)"
+          test -n "$result_dir"
+          echo "dir=$result_dir" >> "$GITHUB_OUTPUT"
+      - name: Validate M3 JSON Schema
+        run: |
+          cargo run --release -p zk-jam -- bench validate-m3 \
+            "${{ steps.result.outputs.dir }}/m3-benchmark.json"
+      - name: Enforce M3 completion gate
+        run: |
+          test "$(jq -r '.pairs | length' "${{ steps.result.outputs.dir }}/m3-benchmark.json")" = "3"
+          test "$(jq -r '.complete' "${{ steps.result.outputs.dir }}/m3-benchmark.json")" = "true"
+          test "$(jq -r '.jambda_provenance_verified' "${{ steps.result.outputs.dir }}/m3-benchmark.json")" = "true"
+          test "$(jq -r '.publication_ready' "${{ steps.result.outputs.dir }}/m3-benchmark.json")" = "true"
+      - name: Upload M3 artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: m3-translation-benchmark-${{ github.sha }}-${{ github.run_id }}
+          if-no-files-found: error
+          path: |
+            ${{ steps.result.outputs.dir }}/m3-benchmark.json
+            ${{ steps.result.outputs.dir }}/m3-benchmark.csv
+            ${{ steps.result.outputs.dir }}/m3-benchmark.md
+      - name: Publish M3 report to job summary
+        run: cat "${{ steps.result.outputs.dir }}/m3-benchmark.md" >> "$GITHUB_STEP_SUMMARY"
+
+  m4-preflight:
+    if: inputs.milestone == 'm4'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout zk-jam
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install pinned OpenVM guest toolchain
+        run: rustup toolchain install nightly-2026-01-18 --profile minimal --component rust-src
+      - name: Read pinned Jambda manifest
+        id: jambda
+        run: |
+          repository="$(jq -er '.repository' integration/jambda-m3.json)"
+          revision="$(jq -er '.revision' integration/jambda-m3.json)"
+          [[ "$revision" =~ ^[0-9a-fA-F]{40}$ ]]
+          echo "repository=$repository" >> "$GITHUB_OUTPUT"
+          echo "revision=$revision" >> "$GITHUB_OUTPUT"
+      - name: Require Jambda read token
+        env:
+          JAMBDA_READ_TOKEN: ${{ secrets.JAMBDA_READ_TOKEN }}
+        run: test -n "$JAMBDA_READ_TOKEN"
+      - name: Checkout pinned Jambda
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.jambda.outputs.repository }}
+          ref: ${{ steps.jambda.outputs.revision }}
+          token: ${{ secrets.JAMBDA_READ_TOKEN }}
+          path: .m3-deps/jambda
+          persist-credentials: false
+      - name: Run fixed M4 execute-only preflight
+        run: |
+          cargo run --release -p zk-jam -- bench m4 --execute-only \
+            --samples 1 --warmup 0 \
+            --jambda-repo .m3-deps/jambda --output benchmarks/results
+      - name: Locate and validate M4 preflight
+        id: result
+        run: |
+          result_dir="$(find benchmarks/results -mindepth 1 -maxdepth 1 -type d -name 'm4-preflight-*' | sort | tail -n 1)"
+          test -n "$result_dir"
+          cargo run --release -p zk-jam -- bench validate-m4-preflight "$result_dir/m4-preflight.json"
+          test "$(jq -r '.programs' "$result_dir/m4-preflight.json")" = "3"
+          test "$(jq -r '.cases | length' "$result_dir/m4-preflight.json")" = "6"
+          test "$(jq -r '.complete' "$result_dir/m4-preflight.json")" = "true"
+          echo "dir=$result_dir" >> "$GITHUB_OUTPUT"
+      - name: Upload M4 preflight artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: m4-preflight-${{ github.sha }}-${{ github.run_id }}
+          if-no-files-found: error
+          path: |
+            ${{ steps.result.outputs.dir }}/m4-preflight.json
+            ${{ steps.result.outputs.dir }}/m4-preflight.md
+      - name: Publish M4 preflight to job summary
+        run: cat "${{ steps.result.outputs.dir }}/m4-preflight.md" >> "$GITHUB_STEP_SUMMARY"
+
+  m4-proof:
+    if: inputs.milestone == 'm4'
+    needs: m4-preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        program: [arithmetic, branch, memory]
+    steps:
+      - name: Checkout zk-jam
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install pinned OpenVM guest toolchain
+        run: rustup toolchain install nightly-2026-01-18 --profile minimal --component rust-src
+      - name: Read pinned Jambda manifest
+        id: jambda
+        run: |
+          repository="$(jq -er '.repository' integration/jambda-m3.json)"
+          revision="$(jq -er '.revision' integration/jambda-m3.json)"
+          [[ "$revision" =~ ^[0-9a-fA-F]{40}$ ]]
+          echo "repository=$repository" >> "$GITHUB_OUTPUT"
+          echo "revision=$revision" >> "$GITHUB_OUTPUT"
+      - name: Require Jambda read token
+        env:
+          JAMBDA_READ_TOKEN: ${{ secrets.JAMBDA_READ_TOKEN }}
+        run: test -n "$JAMBDA_READ_TOKEN"
+      - name: Checkout pinned Jambda
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.jambda.outputs.repository }}
+          ref: ${{ steps.jambda.outputs.revision }}
+          token: ${{ secrets.JAMBDA_READ_TOKEN }}
+          path: .m3-deps/jambda
+          persist-credentials: false
+      - name: Prove one generated M4 program
+        run: |
+          cargo run --release -p zk-jam -- bench m4-proof \
+            --program "${{ matrix.program }}" \
+            --jambda-repo .m3-deps/jambda --output benchmarks/results
+      - name: Locate and validate M4 proof partial
+        id: result
+        run: |
+          result_dir="$(find benchmarks/results -mindepth 1 -maxdepth 1 -type d -name 'm4-proof-${{ matrix.program }}-*' | sort | tail -n 1)"
+          test -n "$result_dir"
+          report="$result_dir/m4-proof-${{ matrix.program }}.json"
+          cargo run --release -p zk-jam -- bench validate-m4-proof "$report"
+          test "$(jq -r '.program' "$report")" = "${{ matrix.program }}"
+          test "$(jq -r '.complete' "$report")" = "true"
+          echo "dir=$result_dir" >> "$GITHUB_OUTPUT"
+      - name: Upload M4 proof partial artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: m4-proof-${{ matrix.program }}-${{ github.sha }}-${{ github.run_id }}
+          if-no-files-found: error
+          path: |
+            ${{ steps.result.outputs.dir }}/m4-proof-${{ matrix.program }}.json
+            ${{ steps.result.outputs.dir }}/m4-proof-${{ matrix.program }}.md
+
+  m4-aggregate:
+    if: inputs.milestone == 'm4'
+    needs: [m4-preflight, m4-proof]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout zk-jam
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build benchmark CLI
+        run: cargo build --release -p zk-jam
+      - name: Download preflight artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: m4-preflight-${{ github.sha }}-${{ github.run_id }}
+          path: artifacts/preflight
+      - name: Download proof artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: m4-proof-*-${{ github.sha }}-${{ github.run_id }}
+          path: artifacts/proofs
+          merge-multiple: true
+      - name: Aggregate and validate final M4 report
+        id: result
+        run: |
+          mkdir -p benchmarks/results
+          cargo run --release -p zk-jam -- bench aggregate-m4 \
+            --preflight artifacts/preflight/m4-preflight.json \
+            --proof-arithmetic artifacts/proofs/m4-proof-arithmetic.json \
+            --proof-branch artifacts/proofs/m4-proof-branch.json \
+            --proof-memory artifacts/proofs/m4-proof-memory.json \
+            --output benchmarks/results
+          result_dir="$(find benchmarks/results -mindepth 1 -maxdepth 1 -type d -name 'm4-*' | sort | tail -n 1)"
+          test -n "$result_dir"
+          cargo run --release -p zk-jam -- bench validate-m4 "$result_dir/m4-benchmark.json"
+          test "$(jq -r '.cases | length' "$result_dir/m4-benchmark.json")" = "6"
+          test "$(jq -r '.complete' "$result_dir/m4-benchmark.json")" = "true"
+          test "$(jq -r '.program_reuse_verified' "$result_dir/m4-benchmark.json")" = "true"
+          test "$(jq -r '.publication_ready' "$result_dir/m4-benchmark.json")" = "true"
+          echo "dir=$result_dir" >> "$GITHUB_OUTPUT"
+      - name: Upload final M4 artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: m4-proven-translation-${{ github.sha }}-${{ github.run_id }}
+          if-no-files-found: error
+          path: |
+            ${{ steps.result.outputs.dir }}/m4-benchmark.json
+            ${{ steps.result.outputs.dir }}/m4-benchmark.csv
+            ${{ steps.result.outputs.dir }}/m4-benchmark.md
+      - name: Publish final M4 report to job summary
+        run: cat "${{ steps.result.outputs.dir }}/m4-benchmark.md" >> "$GITHUB_STEP_SUMMARY"
+
+  m4-publication:
+    if: inputs.milestone == 'm4'
+    needs: m4-aggregate
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        workload:
+          - arithmetic
+          - branch
+          - memory
+    steps:
+      - name: Checkout zk-jam
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install pinned OpenVM guest toolchain
+        run: rustup toolchain install nightly-2026-01-18 --profile minimal --component rust-src
+      - name: Build benchmark CLI
+        run: cargo build --release -p zk-jam
+      - name: Download M4 correctness report
+        uses: actions/download-artifact@v4
+        with:
+          name: m4-proven-translation-${{ github.sha }}-${{ github.run_id }}
+          path: artifacts/m4
+      - name: Run same-runner Native then Translated comparison
+        run: |
+          mkdir -p benchmarks/results
+          cargo run --release -p zk-jam -- bench m4-publication-workload \
+            --workload "${{ matrix.workload }}" \
+            --m4-report artifacts/m4/m4-benchmark.json \
+            --output benchmarks/results
+      - name: Upload workload publication artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m4-publication-${{ matrix.workload }}-${{ github.sha }}-${{ github.run_id }}
+          if-no-files-found: ignore
+          path: benchmarks/results/m4-publication-${{ matrix.workload }}.json
+
+  m4-publication-aggregate:
+    if: ${{ always() && inputs.milestone == 'm4' }}
+    needs: m4-publication
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout zk-jam
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build benchmark CLI
+        run: cargo build --release -p zk-jam
+      - name: Download M4 correctness report
+        uses: actions/download-artifact@v4
+        with:
+          name: m4-proven-translation-${{ github.sha }}-${{ github.run_id }}
+          path: artifacts/m4
+      - name: Download workload publication artifacts
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: m4-publication-*-${{ github.sha }}-${{ github.run_id }}
+          path: artifacts/publication
+          merge-multiple: true
+      - name: Aggregate publication reports without proving
+        id: result
+        run: |
+          mkdir -p benchmarks/results
+          cargo run --release -p zk-jam -- bench aggregate-m4-publication \
+            --m4-report artifacts/m4/m4-benchmark.json \
+            --partial-arithmetic artifacts/publication/m4-publication-arithmetic.json \
+            --partial-branch artifacts/publication/m4-publication-branch.json \
+            --partial-memory artifacts/publication/m4-publication-memory.json \
+            --output benchmarks/results
+          result_dir="$(find benchmarks/results -mindepth 1 -maxdepth 1 -type d -name 'm4-publication-*' | sort | tail -n 1)"
+          test -n "$result_dir"
+          cargo run --release -p zk-jam -- bench validate-m4-publication "$result_dir/m4-publication.json"
+          echo "dir=$result_dir" >> "$GITHUB_OUTPUT"
+      - name: Upload aggregate publication artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: m4-publication-${{ github.sha }}-${{ github.run_id }}
+          if-no-files-found: error
+          path: |
+            ${{ steps.result.outputs.dir }}/m4-publication.json
+            ${{ steps.result.outputs.dir }}/m4-publication.csv
+            ${{ steps.result.outputs.dir }}/m4-comparison.csv
+            ${{ steps.result.outputs.dir }}/m4-publication.md
+      - name: Publish M4 comparison to job summary
+        run: cat "${{ steps.result.outputs.dir }}/m4-publication.md" >> "$GITHUB_STEP_SUMMARY"

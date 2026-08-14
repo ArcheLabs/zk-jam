@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ZK-JAM M4 native versus translated publication benchmark v1",
+  "type": "object",
+  "required": ["schema_version", "zk_jam_revision", "git_dirty", "jambda_repository", "jambda_revision", "jambda_provenance_verified", "openvm_version", "openvm_revision", "guest_toolchain", "backend", "security_bits", "runner", "m4_complete", "m4_publication_ready", "comparison_status", "comparison_complete", "single_sample_diagnostic", "workloads"],
+  "properties": {
+    "schema_version": {"const": "m4-publication-v1"},
+    "zk_jam_revision": {"type": "string", "pattern": "^[0-9a-fA-F]{40}$"},
+    "git_dirty": {"type": "boolean"},
+    "jambda_repository": {"const": "ArcheLabs/jambda"},
+    "jambda_revision": {"type": "string", "pattern": "^[0-9a-fA-F]{40}$"},
+    "jambda_provenance_verified": {"type": "boolean"},
+    "openvm_version": {"const": "2.0.1"},
+    "openvm_revision": {"type": "string", "pattern": "^[0-9a-fA-F]{40}$"},
+    "guest_toolchain": {"const": "nightly-2026-01-18"},
+    "backend": {"const": "cpu"},
+    "security_bits": {"const": 100},
+    "runner": {"$ref": "#/$defs/runner"},
+    "m4_complete": {"type": "boolean"},
+    "m4_publication_ready": {"type": "boolean"},
+    "comparison_status": {"enum": ["complete", "partial", "unavailable"]},
+    "comparison_complete": {"type": "boolean"},
+    "single_sample_diagnostic": {"const": true},
+    "workloads": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"$ref": "#/$defs/workload"}}
+  },
+  "$defs": {
+    "runner": {
+      "type": "object",
+      "required": ["schema_version", "run_id", "git_commit", "git_dirty", "os", "arch", "cpu", "logical_cpus", "memory_bytes", "kernel", "rustc_version", "cargo_version", "build_profile", "backend", "openvm_version", "openvm_revision", "security_bits", "openvm_config_hash", "guest_toolchain", "rss_scope", "rss_includes_keygen", "rss_method"],
+      "properties": {
+        "schema_version": {"type": "string"}, "run_id": {"type": "string"}, "git_commit": {"type": ["string", "null"]}, "git_dirty": {"type": "boolean"},
+        "os": {"type": "string"}, "arch": {"type": "string"}, "cpu": {"type": ["string", "null"]}, "logical_cpus": {"type": ["integer", "null"]}, "memory_bytes": {"type": ["integer", "null"]}, "kernel": {"type": ["string", "null"]}, "rustc_version": {"type": ["string", "null"]}, "cargo_version": {"type": ["string", "null"]}, "build_profile": {"type": "string"}, "backend": {"const": "cpu"}, "openvm_version": {"const": "2.0.1"}, "openvm_revision": {"type": "string"}, "security_bits": {"const": 100}, "openvm_config_hash": {"type": ["string", "null"]}, "guest_toolchain": {"const": "nightly-2026-01-18"}, "rss_scope": {"type": "string"}, "rss_includes_keygen": {"type": "boolean"}, "rss_method": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "side": {
+      "type": "object",
+      "required": ["build_ns", "transpile_ns", "app_keygen_ns", "agg_keygen_ns", "keygen_ns", "execute_ns", "prove_ns", "verify_ns", "proof_bytes", "peak_rss_bytes", "executable_bytes", "serialized_executable_bytes", "output_hex", "public_values_len", "proof_verified", "error"],
+      "properties": {
+        "build_ns": {"type": ["integer", "null"]}, "transpile_ns": {"type": ["integer", "null"]}, "app_keygen_ns": {"type": ["integer", "null"]}, "agg_keygen_ns": {"type": ["integer", "null"]}, "keygen_ns": {"type": ["integer", "null"]}, "execute_ns": {"type": ["integer", "null"]}, "prove_ns": {"type": ["integer", "null"]}, "verify_ns": {"type": ["integer", "null"]}, "proof_bytes": {"type": ["integer", "null"]}, "peak_rss_bytes": {"type": ["integer", "null"]}, "executable_bytes": {"type": ["integer", "null"]}, "serialized_executable_bytes": {"type": ["integer", "null"]}, "output_hex": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"}, "public_values_len": {"type": ["integer", "null"]}, "proof_verified": {"type": "boolean"}, "error": {"type": ["string", "null"]}
+      },
+      "additionalProperties": false
+    },
+    "workload": {
+      "type": "object",
+      "required": ["name", "input", "reference_output_hex", "pvm_instruction_count", "translated_instruction_count", "instruction_expansion_ratio", "translation_ns", "emission_ns", "reference_execute_ns", "native", "translated", "ratios", "fixed_cost_observation", "semantics_match"],
+      "properties": {
+        "name": {"enum": ["arithmetic", "branch", "memory"]}, "input": {"type": "array", "prefixItems": [{"type": "integer", "minimum": 0}, {"type": "integer", "minimum": 0}], "minItems": 2, "maxItems": 2}, "reference_output_hex": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "pvm_instruction_count": {"type": "integer", "minimum": 0}, "translated_instruction_count": {"type": "integer", "minimum": 0}, "instruction_expansion_ratio": {"type": "number", "minimum": 0}, "translation_ns": {"type": "integer", "minimum": 0}, "emission_ns": {"type": "integer", "minimum": 0}, "reference_execute_ns": {"type": ["integer", "null"]},
+        "native": {"$ref": "#/$defs/side"}, "translated": {"$ref": "#/$defs/side"},
+        "ratios": {"type": "object", "required": ["execute_overhead_ratio", "prove_overhead_ratio", "verify_overhead_ratio", "keygen_overhead_ratio", "proof_size_overhead_ratio", "peak_rss_overhead_ratio", "executable_size_overhead_ratio", "serialized_executable_size_overhead_ratio"], "properties": {"execute_overhead_ratio": {"type": ["number", "null"]}, "prove_overhead_ratio": {"type": ["number", "null"]}, "verify_overhead_ratio": {"type": ["number", "null"]}, "keygen_overhead_ratio": {"type": ["number", "null"]}, "proof_size_overhead_ratio": {"type": ["number", "null"]}, "peak_rss_overhead_ratio": {"type": ["number", "null"]}, "executable_size_overhead_ratio": {"type": ["number", "null"]}, "serialized_executable_size_overhead_ratio": {"type": ["number", "null"]}}, "additionalProperties": false},
+        "fixed_cost_observation": {"type": "object", "required": ["translated_pipeline_ns", "translation_share_of_pipeline", "prove_share_of_pipeline", "keygen_share_of_pipeline"], "properties": {"translated_pipeline_ns": {"type": ["integer", "null"]}, "translation_share_of_pipeline": {"type": ["number", "null"]}, "prove_share_of_pipeline": {"type": ["number", "null"]}, "keygen_share_of_pipeline": {"type": ["number", "null"]}}, "additionalProperties": false},
+        "semantics_match": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

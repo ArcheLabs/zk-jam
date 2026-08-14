@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ZK-JAM M4 execute-only preflight v1",
+  "type": "object",
+  "required": ["schema_version", "translation_version", "zk_jam_revision", "git_dirty", "jambda_repository", "jambda_revision", "jambda_provenance_verified", "openvm_version", "openvm_revision", "guest_toolchain", "backend", "programs", "cases", "complete"],
+  "properties": {
+    "schema_version": {"const": "m4-preflight-v1"},
+    "translation_version": {"const": 1},
+    "zk_jam_revision": {"type": "string", "pattern": "^[0-9a-fA-F]{40}$"},
+    "git_dirty": {"type": "boolean"},
+    "jambda_repository": {"const": "ArcheLabs/jambda"},
+    "jambda_revision": {"type": "string", "pattern": "^[0-9a-fA-F]{40}$"},
+    "jambda_provenance_verified": {"type": "boolean"},
+    "openvm_version": {"type": "string"},
+    "openvm_revision": {"type": "string", "pattern": "^[0-9a-fA-F]{40}$"},
+    "guest_toolchain": {"const": "nightly-2026-01-18"},
+    "backend": {"const": "cpu"},
+    "programs": {"const": 3},
+    "cases": {"type": "array", "minItems": 6, "items": {"$ref": "#/$defs/case"}},
+    "complete": {"type": "boolean"}
+  },
+  "$defs": {
+    "case": {
+      "type": "object",
+      "required": ["program", "name", "pvm_program_commitment", "input_commitment", "reference_output_hex", "execution_output_hex", "translation_ns", "emission_ns", "build_ns", "transpile_ns", "public_values_len", "execute_ns", "program_binding_verified", "input_binding_verified", "output_matches_reference", "error", "complete"],
+      "properties": {
+        "program": {"enum": ["arithmetic", "branch", "memory"]},
+        "name": {"type": "string"},
+        "pvm_program_commitment": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "input_commitment": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "reference_output_hex": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "execution_output_hex": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "translation_ns": {"type": "integer", "minimum": 0},
+        "emission_ns": {"type": "integer", "minimum": 0},
+        "build_ns": {"type": "integer", "minimum": 0},
+        "transpile_ns": {"type": "integer", "minimum": 0},
+        "public_values_len": {"const": 96},
+        "execute_ns": {"type": "integer", "minimum": 0},
+        "program_binding_verified": {"type": "boolean"},
+        "input_binding_verified": {"type": "boolean"},
+        "output_matches_reference": {"type": "boolean"},
+        "error": {"type": ["string", "null"]},
+        "complete": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

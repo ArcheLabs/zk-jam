@@ -1,0 +1,22 @@
+[package]
+name = "zk-jam-openvm-m4-native-guests"
+version = "2.0.1"
+edition = "2021"
+
+[workspace]
+
+[dependencies]
+openvm = { version = "2.0.1", git = "https://github.com/openvm-org/openvm.git", rev = "b820b25baab6c5d9b055f64e0286b6b1058e707c", features = ["std"] }
+sha2 = { version = "0.10", default-features = false }
+
+[[bin]]
+name = "m4-native-arithmetic-v1"
+path = "src/arithmetic.rs"
+
+[[bin]]
+name = "m4-native-branch-v1"
+path = "src/branch.rs"
+
+[[bin]]
+name = "m4-native-memory-16384-v1"
+path = "src/memory.rs"

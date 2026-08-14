@@ -16,3 +16,4 @@ openvm-verify-stark-host.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+zk-jam-translation = { path = "../translation" }

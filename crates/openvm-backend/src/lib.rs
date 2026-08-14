@@ -9,7 +9,7 @@ use blake2b_simd::Params;
 use eyre::{eyre, Result, WrapErr};
 use openvm_build::{GuestOptions, TargetFilter};
 use openvm_sdk::{
-    config::AggregationSystemParams,
+    config::{AggregationSystemParams, AppConfig},
     types::{ExecutableFormat, VerificationBaselineJson, VersionedVmStarkProof},
     Sdk, StdIn,
 };
@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 pub const OPENVM_VERSION: &str = "2.0.1";
 pub const OPENVM_REVISION: &str = "b820b25baab6c5d9b055f64e0286b6b1058e707c";
 pub const OPENVM_BACKEND: &str = "cpu";
+pub const OPENVM_PINNED_GUEST_TOOLCHAIN: &str = "nightly-2026-01-18";
 pub const ARITHMETIC_FIXED_XOR: u32 = 0xA5A5_5A5A;
 
 type OpenVmSdk = Sdk;
@@ -32,6 +33,15 @@ pub enum M2Benchmark {
     Arithmetic,
     Branch,
     Memory { bytes: usize },
+    M3TranslationArithmetic,
+    M3TranslationBranchTrue,
+    M3TranslationMemory16K,
+    M4GeneratedArithmetic,
+    M4GeneratedBranch,
+    M4GeneratedMemory16K,
+    M4NativeArithmetic,
+    M4NativeBranch,
+    M4NativeMemory16K,
 }
 
 impl M2Benchmark {
@@ -40,12 +50,27 @@ impl M2Benchmark {
             Self::Arithmetic => "arithmetic",
             Self::Branch => "branch",
             Self::Memory { .. } => "memory",
+            Self::M3TranslationArithmetic => "m3-translation-arithmetic",
+            Self::M3TranslationBranchTrue => "m3-translation-branch-true",
+            Self::M3TranslationMemory16K => "m3-translation-memory-16384",
+            Self::M4GeneratedArithmetic => "m4-generated-arithmetic",
+            Self::M4GeneratedBranch => "m4-generated-branch",
+            Self::M4GeneratedMemory16K => "m4-generated-memory-16384",
+            Self::M4NativeArithmetic => "m4-native-arithmetic",
+            Self::M4NativeBranch => "m4-native-branch",
+            Self::M4NativeMemory16K => "m4-native-memory-16384",
         }
     }
 
     pub fn label(&self) -> String {
         match self {
             Self::Memory { bytes } => format!("memory-{bytes}"),
+            Self::M3TranslationArithmetic => "m3-translation-arithmetic".to_string(),
+            Self::M3TranslationBranchTrue => "m3-translation-branch-true".to_string(),
+            Self::M3TranslationMemory16K => "m3-translation-memory-16384".to_string(),
+            Self::M4GeneratedArithmetic => "m4-generated-arithmetic".to_string(),
+            Self::M4GeneratedBranch => "m4-generated-branch".to_string(),
+            Self::M4GeneratedMemory16K => "m4-generated-memory-16384".to_string(),
             _ => self.name().to_string(),
         }
     }
@@ -55,6 +80,15 @@ impl M2Benchmark {
             Self::Arithmetic => "m2-arithmetic-v1",
             Self::Branch => "m2-branch-v1",
             Self::Memory { .. } => "m2-memory-v1",
+            Self::M3TranslationArithmetic => "m3-translation-arithmetic-v1",
+            Self::M3TranslationBranchTrue => "m3-translation-branch-v1",
+            Self::M3TranslationMemory16K => "m3-translation-memory-v1",
+            Self::M4GeneratedArithmetic | Self::M4GeneratedBranch | Self::M4GeneratedMemory16K => {
+                "m4-generated-v1"
+            }
+            Self::M4NativeArithmetic => "m4-native-arithmetic-v1",
+            Self::M4NativeBranch => "m4-native-branch-v1",
+            Self::M4NativeMemory16K => "m4-native-memory-16384-v1",
         }
     }
 }
@@ -91,8 +125,11 @@ impl OpenVmProgramArtifact {
 /// A program with OpenVM proving and verification keys prepared once for reuse.
 pub struct OpenVmPreparedProgram {
     pub program: OpenVmProgramArtifact,
+    pub app_keygen_time_ns: u128,
+    pub agg_keygen_time_ns: u128,
     pub keygen_time_ns: u128,
     sdk: OpenVmSdk,
+    agg_vk: OpenVmVerifyingKey,
 }
 
 /// Result of running one M2 program.
@@ -167,11 +204,117 @@ impl OpenVmProofArtifact {
     }
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct M4ExpectedStatement {
+    pub program_commitment: [u8; 32],
+    pub input_commitment: [u8; 32],
+    pub public_output: [u8; 32],
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct M4PublicValuesV1 {
+    pub program_commitment: [u8; 32],
+    pub input_commitment: [u8; 32],
+    pub output: [u8; 32],
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum M4PublicValuesError {
+    #[error("M4 public values must be exactly 96 bytes, got {0}")]
+    InvalidLength(usize),
+}
+
+impl M4PublicValuesV1 {
+    pub const LEN: usize = 96;
+
+    pub fn encode(&self) -> [u8; Self::LEN] {
+        let mut bytes = [0u8; Self::LEN];
+        bytes[..32].copy_from_slice(&self.program_commitment);
+        bytes[32..64].copy_from_slice(&self.input_commitment);
+        bytes[64..].copy_from_slice(&self.output);
+        bytes
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, M4PublicValuesError> {
+        if bytes.len() != Self::LEN {
+            return Err(M4PublicValuesError::InvalidLength(bytes.len()));
+        }
+        let mut program_commitment = [0u8; 32];
+        let mut input_commitment = [0u8; 32];
+        let mut output = [0u8; 32];
+        program_commitment.copy_from_slice(&bytes[..32]);
+        input_commitment.copy_from_slice(&bytes[32..64]);
+        output.copy_from_slice(&bytes[64..]);
+        Ok(Self {
+            program_commitment,
+            input_commitment,
+            output,
+        })
+    }
+}
+
+/// M4 application statement wrapped around the normal OpenVM proof artifact. The three public
+/// values are emitted by the guest and therefore are part of the cryptographically verified
+/// OpenVM public-values proof, not trusted host metadata.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct M4ProofArtifact {
+    pub schema_version: u32,
+    pub program_commitment: [u8; 32],
+    pub input_commitment: [u8; 32],
+    pub public_output: [u8; 32],
+    pub proof: OpenVmProofArtifact,
+}
+
+impl M4ProofArtifact {
+    pub fn to_bytes(&self) -> Result<Vec<u8>> {
+        serde_json::to_vec_pretty(self).wrap_err("serialize M4 proof artifact")
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        serde_json::from_slice(bytes).wrap_err("reload M4 proof artifact")
+    }
+
+    pub fn verify_m4(&self, expected: &M4ExpectedStatement, input: M2Input) -> Result<()> {
+        if self.schema_version != 1 {
+            return Err(eyre!("unsupported M4 proof artifact version"));
+        }
+        if self.program_commitment != expected.program_commitment
+            || self.input_commitment != expected.input_commitment
+            || self.public_output != expected.public_output
+        {
+            return Err(eyre!("M4 expected statement mismatch"));
+        }
+        let canonical_input = zk_jam_translation::ExecutionInputV1::new(vec![input.a, input.b]);
+        if self.input_commitment != zk_jam_translation::input_commitment(&canonical_input) {
+            return Err(eyre!("M4 input commitment does not match supplied input"));
+        }
+        let expected_public_values = M4PublicValuesV1 {
+            program_commitment: expected.program_commitment,
+            input_commitment: expected.input_commitment,
+            output: expected.public_output,
+        };
+        let actual_public_values = M4PublicValuesV1::decode(&self.proof.public_output)
+            .map_err(|error| eyre!("decode M4 proof public values: {error}"))?;
+        if actual_public_values != expected_public_values
+            || self.proof.public_output != expected_public_values.encode()
+        {
+            return Err(eyre!("M4 proof public values mismatch"));
+        }
+        self.proof
+            .verify(&input.context_hash(&self.proof.benchmark))
+    }
+}
+
 /// Small façade around OpenVM's official SDK flow.
 #[derive(Clone, Debug, Default)]
 pub struct OpenVmBackend;
 
 impl OpenVmBackend {
+    /// Select the guest toolchain once in the parent process so workers inherit the exact value.
+    pub fn configure_guest_toolchain() -> String {
+        configure_guest_toolchain()
+    }
+
     pub fn info() -> OpenVmInfo {
         OpenVmInfo {
             version: OPENVM_VERSION.to_string(),
@@ -179,22 +322,32 @@ impl OpenVmBackend {
             backend: OPENVM_BACKEND.to_string(),
             security_bits: 100,
             emission_path: "B: RV32IM ELF -> official OpenVM transpiler -> VmExe".to_string(),
-            guest_toolchain: env::var("OPENVM_RUST_TOOLCHAIN")
-                .unwrap_or_else(|_| "OpenVM default nightly-2026-01-18".to_string()),
+            guest_toolchain: selected_guest_toolchain(),
         }
     }
 
     pub fn program(&self, benchmark: M2Benchmark) -> Result<OpenVmProgramArtifact> {
+        let binary = benchmark.guest_binary();
+        self.program_from_guest_dir(benchmark, &guest_dir(), binary)
+    }
+
+    /// Build an OpenVM executable from a caller-provided generated guest package. M4 uses this
+    /// path so the translated IR, rather than a checked-in workload selector, determines the ELF.
+    pub fn program_from_guest_dir(
+        &self,
+        benchmark: M2Benchmark,
+        guest_dir: &std::path::Path,
+        guest_binary: &str,
+    ) -> Result<OpenVmProgramArtifact> {
         configure_guest_toolchain();
         let sdk = sdk();
-        let guest_dir = guest_dir();
         let build_started = Instant::now();
         let elf = sdk
             .build(
                 GuestOptions::default(),
-                &guest_dir,
+                guest_dir,
                 &Some(TargetFilter {
-                    name: benchmark.guest_binary().to_string(),
+                    name: guest_binary.to_string(),
                     kind: "bin".to_string(),
                 }),
                 None,
@@ -208,9 +361,18 @@ impl OpenVmBackend {
         let transpile_time_ns = transpile_started.elapsed().as_nanos();
         let executable_bytes =
             exe.program.instructions_and_debug_infos.len() * 32 + exe.init_memory.len() * 8;
-        let serialized_executable_size_bytes = serde_json::to_vec(&*exe)
-            .wrap_err("serialize OpenVM executable for size measurement")?
-            .len();
+        // `VmExe::init_memory` uses tuple keys, which JSON cannot encode as object keys. Keep the
+        // measurement deterministic by serializing the same executable components with the sparse
+        // memory image represented as ordered triples.
+        let init_memory = exe
+            .init_memory
+            .iter()
+            .map(|((address_space, address), value)| (*address_space, *address, *value))
+            .collect::<Vec<_>>();
+        let serialized_executable_size_bytes =
+            serde_json::to_vec(&(&exe.program, exe.pc_start, init_memory, &exe.fn_bounds))
+                .wrap_err("serialize OpenVM executable for size measurement")?
+                .len();
         Ok(OpenVmProgramArtifact {
             benchmark,
             openvm_version: OPENVM_VERSION,
@@ -224,16 +386,29 @@ impl OpenVmBackend {
         })
     }
 
+    pub fn m4_native_program(&self, benchmark: M2Benchmark) -> Result<OpenVmProgramArtifact> {
+        let guest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("guests/m4-native");
+        let binary = benchmark.guest_binary();
+        self.program_from_guest_dir(benchmark, &guest_dir, binary)
+    }
+
     /// Prepare OpenVM proving and verifying keys once for a program/configuration.
     pub fn prepare(&self, program: OpenVmProgramArtifact) -> Result<OpenVmPreparedProgram> {
-        let sdk = sdk();
+        let sdk = sdk_for_benchmark(&program.benchmark);
         let keygen_started = Instant::now();
+        let app_keygen_started = Instant::now();
         let _ = sdk.app_keygen();
-        let _ = sdk.agg_keygen();
+        let app_keygen_time_ns = app_keygen_started.elapsed().as_nanos();
+        let agg_keygen_started = Instant::now();
+        let (_, agg_vk) = sdk.agg_keygen();
+        let agg_keygen_time_ns = agg_keygen_started.elapsed().as_nanos();
         Ok(OpenVmPreparedProgram {
             program,
+            app_keygen_time_ns,
+            agg_keygen_time_ns,
             keygen_time_ns: keygen_started.elapsed().as_nanos(),
             sdk,
+            agg_vk,
         })
     }
 
@@ -243,7 +418,7 @@ impl OpenVmBackend {
         input: M2Input,
     ) -> Result<OpenVmExecutionResult> {
         let stdin = input.stdin();
-        let sdk = sdk();
+        let sdk = sdk_for_benchmark(&program.benchmark);
         let started = Instant::now();
         let public_output = sdk
             .execute(ExecutableFormat::SharedVmExe(program.exe.clone()), stdin)
@@ -312,7 +487,6 @@ impl OpenVmBackend {
         let versioned = VersionedVmStarkProof::new(proof)
             .map_err(|error| eyre!("encode OpenVM proof: {error}"))?;
         let context_hash = input.context_hash(&prepared.program.benchmark);
-        let (_, agg_vk) = prepared.sdk.agg_keygen();
         Ok(OpenVmProofArtifact {
             benchmark: prepared.program.benchmark.clone(),
             openvm_version: OPENVM_VERSION.to_string(),
@@ -325,7 +499,7 @@ impl OpenVmBackend {
             public_output,
             proof: versioned,
             baseline: baseline.into(),
-            agg_vk,
+            agg_vk: prepared.agg_vk.clone(),
         })
     }
 
@@ -393,26 +567,75 @@ fn sdk() -> OpenVmSdk {
     Sdk::riscv32(app_params, AggregationSystemParams::default())
 }
 
+fn sdk_for_benchmark(benchmark: &M2Benchmark) -> OpenVmSdk {
+    if matches!(
+        benchmark,
+        M2Benchmark::M4GeneratedArithmetic
+            | M2Benchmark::M4GeneratedBranch
+            | M2Benchmark::M4GeneratedMemory16K
+            | M2Benchmark::M4NativeArithmetic
+            | M2Benchmark::M4NativeBranch
+            | M2Benchmark::M4NativeMemory16K
+    ) {
+        let app_params = app_params_with_100_bits_security(MAX_APP_LOG_STACKED_HEIGHT);
+        let mut app_config = AppConfig::riscv32(app_params);
+        app_config.app_vm_config.system.config = app_config
+            .app_vm_config
+            .system
+            .config
+            .clone()
+            .with_public_values(M4PublicValuesV1::LEN);
+        return Sdk::new(app_config, AggregationSystemParams::default())
+            .expect("valid M4 OpenVM SDK configuration");
+    }
+    sdk()
+}
+
 fn guest_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("guests/m2")
 }
 
-fn configure_guest_toolchain() {
-    if env::var_os("OPENVM_RUST_TOOLCHAIN").is_some() {
-        return;
+fn selected_guest_toolchain() -> String {
+    env::var("OPENVM_RUST_TOOLCHAIN")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| OPENVM_PINNED_GUEST_TOOLCHAIN.to_string())
+}
+
+fn configure_guest_toolchain() -> String {
+    if let Ok(configured) = env::var("OPENVM_RUST_TOOLCHAIN") {
+        if !configured.trim().is_empty() {
+            return configured;
+        }
     }
-    let Ok(output) = Command::new("rustup").args(["toolchain", "list"]).output() else {
-        return;
-    };
-    if output.status.success()
-        && String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .any(|line| line.starts_with("nightly"))
+    let installed = Command::new("rustup")
+        .args(["toolchain", "list"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
+        .unwrap_or_default();
+    let selected = select_guest_toolchain(&installed);
+    env::set_var("OPENVM_RUST_TOOLCHAIN", selected);
+    selected.to_string()
+}
+
+fn select_guest_toolchain(installed: &str) -> &'static str {
+    if installed
+        .lines()
+        .any(|line| line.starts_with(OPENVM_PINNED_GUEST_TOOLCHAIN))
     {
-        // The OpenVM default nightly is not installed in every environment. The generic nightly
-        // toolchain is used only as a local fallback; callers can pin an exact toolchain through
-        // OPENVM_RUST_TOOLCHAIN and the selected value is recorded in benchmark environment.json.
-        env::set_var("OPENVM_RUST_TOOLCHAIN", "nightly");
+        OPENVM_PINNED_GUEST_TOOLCHAIN
+    } else if installed.lines().any(|line| {
+        line.starts_with("nightly-x86_64")
+            || line.starts_with("nightly-aarch64")
+            || line.trim() == "nightly"
+    }) {
+        // Generic nightly is a development-only fallback. Publication readiness rejects it.
+        "nightly"
+    } else {
+        // Let rustup/OpenVM install the pinned toolchain when no usable nightly exists locally.
+        OPENVM_PINNED_GUEST_TOOLCHAIN
     }
 }
 
@@ -460,6 +683,41 @@ mod tests {
         assert_ne!(
             M2Input::arithmetic(1, 2).context_hash(&benchmark),
             M2Input::arithmetic(1, 3).context_hash(&benchmark)
+        );
+    }
+
+    #[test]
+    fn m4_public_values_roundtrip_and_fail_closed() {
+        let values = M4PublicValuesV1 {
+            program_commitment: [1; 32],
+            input_commitment: [2; 32],
+            output: [3; 32],
+        };
+        assert_eq!(M4PublicValuesV1::decode(&values.encode()).unwrap(), values);
+        assert!(M4PublicValuesV1::decode(&values.encode()[..95]).is_err());
+        let mut oversized = values.encode().to_vec();
+        oversized.push(4);
+        assert!(M4PublicValuesV1::decode(&oversized).is_err());
+        let mut tampered = values.encode();
+        tampered[0] ^= 1;
+        assert_ne!(M4PublicValuesV1::decode(&tampered).unwrap(), values);
+        tampered[32] ^= 1;
+        assert_ne!(M4PublicValuesV1::decode(&tampered).unwrap(), values);
+        tampered[64] ^= 1;
+        assert_ne!(M4PublicValuesV1::decode(&tampered).unwrap(), values);
+    }
+
+    #[test]
+    fn guest_toolchain_selection_prefers_the_pin() {
+        assert_eq!(
+            select_guest_toolchain(
+                "nightly-x86_64-unknown-linux-gnu\nnightly-2026-01-18-x86_64-unknown-linux-gnu\n"
+            ),
+            OPENVM_PINNED_GUEST_TOOLCHAIN
+        );
+        assert_eq!(
+            select_guest_toolchain("nightly-x86_64-unknown-linux-gnu\n"),
+            "nightly"
         );
     }
 

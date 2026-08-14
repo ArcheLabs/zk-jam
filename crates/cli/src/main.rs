@@ -3,7 +3,13 @@ use std::{
     path::{Path, PathBuf},
     process::ExitCode,
 };
-use zk_jam_benchmark::{report_run, run_m2, run_worker, BenchmarkOptions};
+use zk_jam_benchmark::{
+    aggregate_m4_publication, aggregate_m4_reports, report_run, run_m2, run_m3, run_m3_worker,
+    run_m4_preflight, run_m4_proof_program, run_m4_publication, run_m4_publication_worker,
+    run_m4_publication_workload, run_worker, validate_m3_report, validate_m4_preflight_report,
+    validate_m4_proof_partial_report, validate_m4_publication_report, validate_m4_report,
+    verify_jambda_provenance, BenchmarkOptions, M4ProgramId,
+};
 use zk_jam_openvm_backend::{M2Benchmark, M2Input, OpenVmBackend};
 use zk_jam_refine_interface::{
     CanonicalCodec, PvmBlockV1, PvmInstructionV1, PvmProgramV1, PvmTerminatorV1, RefineCaseV1,
@@ -20,6 +26,19 @@ fn usage() {
     eprintln!("       zk-jam openvm verify <artifact.json>");
     eprintln!("       zk-jam bench m2 --backend cpu [--benchmark arithmetic|branch|memory] [--samples N] [--warmup N] [--quick] [--output benchmarks/results]");
     eprintln!("       zk-jam bench report <run-id> [--output benchmarks/results]");
+    eprintln!("       zk-jam bench verify-jambda --repo <checkout> [--manifest integration/jambda-m3.json]");
+    eprintln!("       zk-jam bench validate-m3 <report.json> [--schema schema.json]");
+    eprintln!("       zk-jam bench validate-m4 <report.json> [--schema schema.json]");
+    eprintln!("       zk-jam bench validate-m4-preflight <report.json> [--schema schema.json]");
+    eprintln!("       zk-jam bench validate-m4-proof <report.json> [--schema schema.json]");
+    eprintln!("       zk-jam bench validate-m4-publication <report.json> [--schema schema.json]");
+    eprintln!("       zk-jam bench m3 --jambda-repo <checkout> [--samples N] [--warmup N] [--output benchmarks/results]");
+    eprintln!("       zk-jam bench m4 --execute-only --jambda-repo <checkout> [--samples 1] [--warmup 0] [--output benchmarks/results]");
+    eprintln!("       zk-jam bench m4-proof --program arithmetic|branch|memory --jambda-repo <checkout> [--output benchmarks/results]");
+    eprintln!("       zk-jam bench aggregate-m4 --preflight <report.json> --proof-arithmetic <report.json> --proof-branch <report.json> --proof-memory <report.json> [--output benchmarks/results]");
+    eprintln!("       zk-jam bench m4-publication-workload --workload arithmetic|branch|memory --m4-report <report.json> [--output benchmarks/results]");
+    eprintln!("       zk-jam bench aggregate-m4-publication --m4-report <report.json> --partial-arithmetic <report.json> --partial-branch <report.json> --partial-memory <report.json> [--output benchmarks/results]");
+    eprintln!("       zk-jam bench m4-publication --m4-report <report.json> [--output benchmarks/results]");
 }
 
 fn benchmark(name: &str) -> Result<(M2Benchmark, M2Input), Box<dyn std::error::Error>> {
@@ -156,7 +175,386 @@ fn bench_command(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
                 );
             print!("{}", report_run(&output, run_id)?);
         }
-        _ => return Err("expected bench m2 or bench report".into()),
+        Some("validate-m3") => {
+            let report = PathBuf::from(args.get(2).ok_or("missing M3 report path")?);
+            let schema = args
+                .iter()
+                .position(|arg| arg == "--schema")
+                .and_then(|index| args.get(index + 1))
+                .map_or_else(
+                    || {
+                        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                            .join("../../benchmarks/schema/m3-paired-v2.schema.json")
+                    },
+                    PathBuf::from,
+                );
+            validate_m3_report(&report, &schema)?;
+            println!("M3 schema valid: {}", report.display());
+        }
+        Some("validate-m4") => {
+            let report = PathBuf::from(args.get(2).ok_or("missing M4 report path")?);
+            let schema = args
+                .iter()
+                .position(|arg| arg == "--schema")
+                .and_then(|index| args.get(index + 1))
+                .map_or_else(
+                    || {
+                        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                            .join("../../benchmarks/schema/m4-proven-translation-v1.schema.json")
+                    },
+                    PathBuf::from,
+                );
+            validate_m4_report(&report, &schema)?;
+            println!("M4 schema valid: {}", report.display());
+        }
+        Some("validate-m4-preflight") => {
+            let report = PathBuf::from(args.get(2).ok_or("missing M4 preflight report path")?);
+            let schema = args
+                .iter()
+                .position(|arg| arg == "--schema")
+                .and_then(|index| args.get(index + 1))
+                .map_or_else(
+                    || {
+                        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                            .join("../../benchmarks/schema/m4-preflight-v1.schema.json")
+                    },
+                    PathBuf::from,
+                );
+            validate_m4_preflight_report(&report, &schema)?;
+            println!("M4 preflight schema valid: {}", report.display());
+        }
+        Some("validate-m4-proof") => {
+            let report = PathBuf::from(args.get(2).ok_or("missing M4 proof partial report path")?);
+            let schema = args
+                .iter()
+                .position(|arg| arg == "--schema")
+                .and_then(|index| args.get(index + 1))
+                .map_or_else(
+                    || {
+                        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                            .join("../../benchmarks/schema/m4-proof-partial-v1.schema.json")
+                    },
+                    PathBuf::from,
+                );
+            validate_m4_proof_partial_report(&report, &schema)?;
+            println!("M4 proof partial schema valid: {}", report.display());
+        }
+        Some("validate-m4-publication") => {
+            let report = PathBuf::from(args.get(2).ok_or("missing M4 publication report path")?);
+            let schema = args
+                .iter()
+                .position(|arg| arg == "--schema")
+                .and_then(|index| args.get(index + 1))
+                .map_or_else(
+                    || {
+                        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                            .join("../../benchmarks/schema/m4-publication-v1.schema.json")
+                    },
+                    PathBuf::from,
+                );
+            validate_m4_publication_report(&report, &schema)?;
+            println!("M4 publication schema valid: {}", report.display());
+        }
+        Some("verify-jambda") => {
+            let repo = args
+                .iter()
+                .position(|arg| arg == "--repo")
+                .and_then(|index| args.get(index + 1))
+                .map(PathBuf::from)
+                .ok_or("missing --repo")?;
+            let manifest = args
+                .iter()
+                .position(|arg| arg == "--manifest")
+                .and_then(|index| args.get(index + 1))
+                .map_or_else(
+                    || {
+                        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                            .join("../../integration/jambda-m3.json")
+                    },
+                    PathBuf::from,
+                );
+            let provenance = verify_jambda_provenance(&repo, &manifest)?;
+            println!(
+                "Jambda provenance verified: {}@{}",
+                provenance.repository, provenance.revision
+            );
+        }
+        Some("m3") => {
+            let mut output = PathBuf::from("benchmarks/results");
+            let mut samples = 5;
+            let mut warmup = 1;
+            let mut jambda_repo = None;
+            let mut index = 2;
+            while index < args.len() {
+                match args[index].as_str() {
+                    "--output" => {
+                        output =
+                            PathBuf::from(args.get(index + 1).ok_or("missing --output value")?);
+                        index += 2;
+                    }
+                    "--samples" => {
+                        samples = args
+                            .get(index + 1)
+                            .ok_or("missing --samples value")?
+                            .parse()?;
+                        index += 2;
+                    }
+                    "--warmup" => {
+                        warmup = args
+                            .get(index + 1)
+                            .ok_or("missing --warmup value")?
+                            .parse()?;
+                        index += 2;
+                    }
+                    "--jambda-repo" => {
+                        jambda_repo = Some(PathBuf::from(
+                            args.get(index + 1).ok_or("missing --jambda-repo value")?,
+                        ));
+                        index += 2;
+                    }
+                    other => return Err(format!("unknown bench option: {other}").into()),
+                }
+            }
+            let jambda_repo = jambda_repo.ok_or("M3 requires --jambda-repo")?;
+            let report = run_m3(&output, samples, warmup, &jambda_repo)?;
+            println!(
+                "M3 complete: {}\nM3 publication ready: {}",
+                report.complete, report.publication_ready
+            );
+        }
+        Some("m4-proof") => {
+            let mut output = PathBuf::from("benchmarks/results");
+            let mut jambda_repo = None;
+            let mut program = None;
+            let mut index = 2;
+            while index < args.len() {
+                match args[index].as_str() {
+                    "--output" => {
+                        output = PathBuf::from(args.get(index + 1).ok_or("missing --output value")?);
+                        index += 2;
+                    }
+                    "--jambda-repo" => {
+                        jambda_repo = Some(PathBuf::from(args.get(index + 1).ok_or("missing --jambda-repo value")?));
+                        index += 2;
+                    }
+                    "--program" => {
+                        program = Some(match args.get(index + 1).ok_or("missing --program value")?.as_str() {
+                            "arithmetic" => M4ProgramId::Arithmetic,
+                            "branch" => M4ProgramId::Branch,
+                            "memory" | "memory-16384" => M4ProgramId::Memory16K,
+                            other => return Err(format!("unknown M4 program: {other}").into()),
+                        });
+                        index += 2;
+                    }
+                    other => return Err(format!("unknown bench option: {other}").into()),
+                }
+            }
+            let report = run_m4_proof_program(
+                &output,
+                &jambda_repo.ok_or("M4 proof requires --jambda-repo")?,
+                program.ok_or("M4 proof requires --program")?,
+            )?;
+            println!("M4 proof program {} complete: {}", report.program, report.complete);
+            if !report.complete {
+                return Err("M4 proof program failed".into());
+            }
+        }
+        Some("aggregate-m4") => {
+            let mut output = PathBuf::from("benchmarks/results");
+            let mut preflight = None;
+            let mut proofs = [None, None, None];
+            let mut index = 2;
+            while index < args.len() {
+                match args[index].as_str() {
+                    "--output" => {
+                        output = PathBuf::from(args.get(index + 1).ok_or("missing --output value")?);
+                        index += 2;
+                    }
+                    "--preflight" => {
+                        preflight = Some(PathBuf::from(args.get(index + 1).ok_or("missing --preflight value")?));
+                        index += 2;
+                    }
+                    "--proof-arithmetic" => {
+                        proofs[0] = Some(PathBuf::from(args.get(index + 1).ok_or("missing --proof-arithmetic value")?));
+                        index += 2;
+                    }
+                    "--proof-branch" => {
+                        proofs[1] = Some(PathBuf::from(args.get(index + 1).ok_or("missing --proof-branch value")?));
+                        index += 2;
+                    }
+                    "--proof-memory" => {
+                        proofs[2] = Some(PathBuf::from(args.get(index + 1).ok_or("missing --proof-memory value")?));
+                        index += 2;
+                    }
+                    other => return Err(format!("unknown bench option: {other}").into()),
+                }
+            }
+            let report = aggregate_m4_reports(
+                &output,
+                &preflight.ok_or("M4 aggregate requires --preflight")?,
+                &proofs
+                    .into_iter()
+                    .map(|path| path.ok_or("M4 aggregate requires all three proof reports"))
+                    .collect::<Result<Vec<_>, _>>()?,
+            )?;
+            println!("M4 aggregate complete: {}\nM4 publication ready: {}", report.complete, report.publication_ready);
+            if !report.complete {
+                return Err("M4 aggregate failed".into());
+            }
+        }
+        Some("m4-publication-workload") => {
+            let mut output = PathBuf::from("benchmarks/results");
+            let mut m4_report = None;
+            let mut workload = None;
+            let mut index = 2;
+            while index < args.len() {
+                match args[index].as_str() {
+                    "--output" => {
+                        output = PathBuf::from(args.get(index + 1).ok_or("missing --output value")?);
+                        index += 2;
+                    }
+                    "--m4-report" => {
+                        m4_report = Some(PathBuf::from(args.get(index + 1).ok_or("missing --m4-report value")?));
+                        index += 2;
+                    }
+                    "--workload" => {
+                        workload = Some(match args.get(index + 1).ok_or("missing --workload value")?.as_str() {
+                            "arithmetic" => M4ProgramId::Arithmetic,
+                            "branch" => M4ProgramId::Branch,
+                            "memory" | "memory-16384" => M4ProgramId::Memory16K,
+                            other => return Err(format!("unknown M4 publication workload: {other}").into()),
+                        });
+                        index += 2;
+                    }
+                    other => return Err(format!("unknown bench option: {other}").into()),
+                }
+            }
+            let report = run_m4_publication_workload(
+                &output,
+                &m4_report.ok_or("M4 publication workload requires --m4-report")?,
+                workload.ok_or("M4 publication workload requires --workload")?,
+            )?;
+            println!("M4 publication workload {} complete: {}", report.name, report.semantics_match);
+        }
+        Some("aggregate-m4-publication") => {
+            let mut output = PathBuf::from("benchmarks/results");
+            let mut m4_report = None;
+            let mut partials = [None, None, None];
+            let mut index = 2;
+            while index < args.len() {
+                match args[index].as_str() {
+                    "--output" => {
+                        output = PathBuf::from(args.get(index + 1).ok_or("missing --output value")?);
+                        index += 2;
+                    }
+                    "--m4-report" => {
+                        m4_report = Some(PathBuf::from(args.get(index + 1).ok_or("missing --m4-report value")?));
+                        index += 2;
+                    }
+                    "--partial-arithmetic" => {
+                        partials[0] = Some(PathBuf::from(args.get(index + 1).ok_or("missing --partial-arithmetic value")?));
+                        index += 2;
+                    }
+                    "--partial-branch" => {
+                        partials[1] = Some(PathBuf::from(args.get(index + 1).ok_or("missing --partial-branch value")?));
+                        index += 2;
+                    }
+                    "--partial-memory" => {
+                        partials[2] = Some(PathBuf::from(args.get(index + 1).ok_or("missing --partial-memory value")?));
+                        index += 2;
+                    }
+                    other => return Err(format!("unknown bench option: {other}").into()),
+                }
+            }
+            let partial_arithmetic = partials[0].as_deref().ok_or("missing --partial-arithmetic")?;
+            let partial_branch = partials[1].as_deref().ok_or("missing --partial-branch")?;
+            let partial_memory = partials[2].as_deref().ok_or("missing --partial-memory")?;
+            let report = aggregate_m4_publication(
+                &output,
+                &m4_report.ok_or("M4 publication aggregate requires --m4-report")?,
+                [partial_arithmetic, partial_branch, partial_memory],
+            )?;
+            println!("M4 publication status: {}\nM4 comparison complete: {}", report.comparison_status, report.comparison_complete);
+        }
+        Some("m4-publication") => {
+            let mut output = PathBuf::from("benchmarks/results");
+            let mut m4_report = None;
+            let mut index = 2;
+            while index < args.len() {
+                match args[index].as_str() {
+                    "--output" => {
+                        output = PathBuf::from(args.get(index + 1).ok_or("missing --output value")?);
+                        index += 2;
+                    }
+                    "--m4-report" => {
+                        m4_report = Some(PathBuf::from(args.get(index + 1).ok_or("missing --m4-report value")?));
+                        index += 2;
+                    }
+                    other => return Err(format!("unknown bench option: {other}").into()),
+                }
+            }
+            let report = run_m4_publication(&output, &m4_report.ok_or("M4 publication requires --m4-report")?)?;
+            println!("M4 publication status: {}\nM4 comparison complete: {}", report.comparison_status, report.comparison_complete);
+        }
+        Some("m4") => {
+            let mut output = PathBuf::from("benchmarks/results");
+            let mut samples = 1;
+            let mut warmup = 0;
+            let mut jambda_repo = None;
+            let mut execute_only = false;
+            let mut index = 2;
+            while index < args.len() {
+                match args[index].as_str() {
+                    "--output" => {
+                        output =
+                            PathBuf::from(args.get(index + 1).ok_or("missing --output value")?);
+                        index += 2;
+                    }
+                    "--samples" => {
+                        samples = args
+                            .get(index + 1)
+                            .ok_or("missing --samples value")?
+                            .parse()?;
+                        index += 2;
+                    }
+                    "--warmup" => {
+                        warmup = args
+                            .get(index + 1)
+                            .ok_or("missing --warmup value")?
+                            .parse()?;
+                        index += 2;
+                    }
+                    "--jambda-repo" => {
+                        jambda_repo = Some(PathBuf::from(
+                            args.get(index + 1).ok_or("missing --jambda-repo value")?,
+                        ));
+                        index += 2;
+                    }
+                    "--execute-only" => {
+                        execute_only = true;
+                        index += 1;
+                    }
+                    other => return Err(format!("unknown bench option: {other}").into()),
+                }
+            }
+            if samples != 1 || warmup != 0 {
+                return Err(
+                    "M4 functional proving currently requires --samples 1 --warmup 0".into(),
+                );
+            }
+            if !execute_only {
+                return Err("local M4 requires --execute-only; full proving runs through bench m4-proof in GitHub Actions".into());
+            }
+            let report =
+                run_m4_preflight(&output, &jambda_repo.ok_or("M4 requires --jambda-repo")?)?;
+            println!("M4 preflight complete: {}", report.complete);
+            if !report.complete {
+                return Err("M4 execute-only preflight failed".into());
+            }
+        }
+        _ => {
+            return Err("expected bench m2, report, validate-m3, validate-m4, validate-m4-preflight, validate-m4-proof, validate-m4-publication, m4, m4-proof, aggregate-m4, m4-publication-workload, aggregate-m4-publication, or m4-publication".into())
+        }
     }
     Ok(())
 }
@@ -339,9 +737,129 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        (Some("__m3-worker"), _) => match m3_worker_command(&argv) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("zk-jam M3 worker: {error}");
+                ExitCode::FAILURE
+            }
+        },
+        (Some("__m4-publication-worker"), _) => match m4_publication_worker_command(&argv) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("zk-jam M4 publication worker: {error}");
+                ExitCode::FAILURE
+            }
+        },
         _ => {
             usage();
             ExitCode::FAILURE
         }
     }
+}
+
+fn m3_worker_command(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let mut benchmark = None;
+    let mut a = None;
+    let mut b = None;
+    let mut samples = 1;
+    let mut warmup = 0;
+    let mut output = None;
+    let mut index = 1;
+    while index < args.len() {
+        match args[index].as_str() {
+            "__m3-worker" => index += 1,
+            "--benchmark" => {
+                benchmark = args.get(index + 1).cloned();
+                index += 2;
+            }
+            "--a" => {
+                a = Some(args.get(index + 1).ok_or("missing --a value")?.parse()?);
+                index += 2;
+            }
+            "--b" => {
+                b = Some(args.get(index + 1).ok_or("missing --b value")?.parse()?);
+                index += 2;
+            }
+            "--samples" => {
+                samples = args
+                    .get(index + 1)
+                    .ok_or("missing --samples value")?
+                    .parse()?;
+                index += 2;
+            }
+            "--warmup" => {
+                warmup = args
+                    .get(index + 1)
+                    .ok_or("missing --warmup value")?
+                    .parse()?;
+                index += 2;
+            }
+            "--output" => {
+                output = args.get(index + 1).map(PathBuf::from);
+                index += 2;
+            }
+            other => return Err(format!("unknown M3 worker option: {other}").into()),
+        }
+    }
+    run_m3_worker(
+        benchmark.as_deref().ok_or("missing M3 worker benchmark")?,
+        a.ok_or("missing M3 worker a")?,
+        b.ok_or("missing M3 worker b")?,
+        samples,
+        warmup,
+        output.as_deref().ok_or("missing M3 worker output")?,
+    )?;
+    Ok(())
+}
+
+fn m4_publication_worker_command(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let mut implementation = None;
+    let mut workload = None;
+    let mut a = None;
+    let mut b = None;
+    let mut output = None;
+    let mut index = 1;
+    while index < args.len() {
+        match args[index].as_str() {
+            "__m4-publication-worker" => index += 1,
+            "--implementation" => {
+                implementation = Some(args.get(index + 1).ok_or("missing implementation")?.clone());
+                index += 2;
+            }
+            "--workload" => {
+                workload = Some(
+                    match args.get(index + 1).ok_or("missing workload")?.as_str() {
+                        "arithmetic" => M4ProgramId::Arithmetic,
+                        "branch" => M4ProgramId::Branch,
+                        "memory" => M4ProgramId::Memory16K,
+                        other => return Err(format!("unknown M4 workload: {other}").into()),
+                    },
+                );
+                index += 2;
+            }
+            "--a" => {
+                a = Some(args.get(index + 1).ok_or("missing --a value")?.parse()?);
+                index += 2;
+            }
+            "--b" => {
+                b = Some(args.get(index + 1).ok_or("missing --b value")?.parse()?);
+                index += 2;
+            }
+            "--output" => {
+                output = Some(PathBuf::from(
+                    args.get(index + 1).ok_or("missing --output value")?,
+                ));
+                index += 2;
+            }
+            other => return Err(format!("unknown M4 publication worker option: {other}").into()),
+        }
+    }
+    run_m4_publication_worker(
+        implementation.as_deref().ok_or("missing implementation")?,
+        workload.ok_or("missing workload")?,
+        [a.ok_or("missing --a value")?, b.ok_or("missing --b value")?],
+        output.as_deref().ok_or("missing --output value")?,
+    )?;
+    Ok(())
 }

@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ZK-JAM benchmark summary v2",
+  "type": "object",
+  "required": [
+    "schema_version", "run_id", "backend", "disclaimer", "publication_ready",
+    "publication_reasons", "warmup_samples", "measured_samples", "cases"
+  ],
+  "properties": {
+    "schema_version": {"const": "summary-v2"},
+    "run_id": {"type": "string"},
+    "backend": {"enum": ["cpu", "gpu"]},
+    "disclaimer": {"type": "string"},
+    "publication_ready": {"type": "boolean"},
+    "publication_reasons": {"type": "array", "items": {"type": "string"}},
+    "warmup_samples": {"type": "integer", "minimum": 0},
+    "measured_samples": {"type": "integer", "minimum": 0},
+    "cases": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/case"}
+    }
+  },
+  "$defs": {
+    "metric": {
+      "type": ["object", "null"],
+      "properties": {
+        "n": {"type": "integer", "minimum": 0},
+        "min": {"type": ["number", "null"]},
+        "max": {"type": ["number", "null"]},
+        "mean": {"type": ["number", "null"]},
+        "median": {"type": ["number", "null"]},
+        "p95": {"type": ["number", "null"]},
+        "stddev": {"type": ["number", "null"]}
+      },
+      "required": ["n", "min", "max", "mean", "median", "p95", "stddev"],
+      "additionalProperties": false
+    },
+    "case": {
+      "type": "object",
+      "required": [
+        "benchmark", "case", "samples", "failed_samples", "execute_time_ns",
+        "prove_time_ns", "verify_time_ns", "total_time_ns", "peak_rss_bytes",
+        "proof_payload_size_bytes", "artifact_size_bytes", "serialized_executable_size_bytes",
+        "estimated_executable_size_bytes", "build_time_ns", "transpile_time_ns", "keygen_time_ns"
+      ],
+      "properties": {
+        "benchmark": {"type": "string"},
+        "case": {"type": "string"},
+        "samples": {"type": "integer", "minimum": 0},
+        "failed_samples": {"type": "integer", "minimum": 0},
+        "execute_time_ns": {"$ref": "#/$defs/metric"},
+        "prove_time_ns": {"$ref": "#/$defs/metric"},
+        "verify_time_ns": {"$ref": "#/$defs/metric"},
+        "total_time_ns": {"$ref": "#/$defs/metric"},
+        "peak_rss_bytes": {"type": ["integer", "null"], "minimum": 0},
+        "proof_payload_size_bytes": {"$ref": "#/$defs/metric"},
+        "artifact_size_bytes": {"$ref": "#/$defs/metric"},
+        "serialized_executable_size_bytes": {"$ref": "#/$defs/metric"},
+        "estimated_executable_size_bytes": {"$ref": "#/$defs/metric"},
+        "build_time_ns": {"type": ["integer", "null"], "minimum": 0},
+        "transpile_time_ns": {"type": ["integer", "null"], "minimum": 0},
+        "keygen_time_ns": {"type": ["integer", "null"], "minimum": 0}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

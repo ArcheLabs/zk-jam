@@ -10,7 +10,11 @@ The M2 boundary is implemented in `zk-jam-openvm-backend`:
 The acceptance test is intentionally ignored by default because it requires the guest toolchain and CPU proving resources. Run it with:
 
 ```text
-OPENVM_RUST_TOOLCHAIN=nightly cargo test -p zk-jam-openvm-backend m2_proof_round_trip_and_tamper_matrix -- --ignored --nocapture
+OPENVM_RUST_TOOLCHAIN=nightly-2026-01-18 cargo test -p zk-jam-openvm-backend m2_proof_round_trip_and_tamper_matrix -- --ignored --nocapture
 ```
 
-M3 readiness is `NOT READY` until that sequence and a public CPU benchmark run complete successfully. No Jambda source is modified by M2.
+The M2 acceptance sequence and the M3 public CPU paired benchmark are now
+implemented. M3 completion is recorded by `m3-benchmark.json` with
+`complete: true`; its scope is limited to the three normalized translation
+fixtures described in [ADR 0004](decisions/0004-m3-translation-smoke.md).
+No Jambda source is modified by this repository.

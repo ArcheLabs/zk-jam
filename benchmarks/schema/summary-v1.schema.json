@@ -1,25 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "ZK-JAM M2 benchmark summary",
+  "title": "ZK-JAM M2 benchmark summary v1",
   "type": "object",
-  "required": ["schema_version", "run_id", "backend", "disclaimer"],
-  "allOf": [{
-    "if": {"properties": {"schema_version": {"const": "summary-v1"}}},
-    "then": {"required": ["metrics_ns", "sample_counts"]}
-  }, {
-    "if": {"properties": {"schema_version": {"const": "summary-v2"}}},
-    "then": {"required": ["publication_ready", "publication_reasons", "warmup_samples", "measured_samples", "cases"]}
-  }],
+  "required": ["schema_version", "run_id", "backend", "disclaimer", "metrics_ns", "sample_counts"],
   "properties": {
-    "schema_version": {"enum": ["summary-v1", "summary-v2"]},
+    "schema_version": {"const": "summary-v1"},
     "run_id": {"type": "string"},
     "backend": {"enum": ["cpu", "gpu"]},
     "disclaimer": {"type": "string"},
-    "publication_ready": {"type": "boolean"},
-    "publication_reasons": {"type": "array"},
-    "warmup_samples": {"type": "integer"},
-    "measured_samples": {"type": "integer"},
-    "cases": {"type": "array"},
     "metrics_ns": {"type": "object"},
     "sample_counts": {"type": "object"}
   }

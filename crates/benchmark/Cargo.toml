@@ -8,7 +8,9 @@ authors.workspace = true
 [dependencies]
 blake2b_simd.workspace = true
 eyre = "0.6"
+jsonschema.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 zk-jam-openvm-backend = { path = "../openvm-backend" }
 zk-jam-refine-interface = { path = "../refine-interface" }
+zk-jam-translation = { path = "../translation" }
