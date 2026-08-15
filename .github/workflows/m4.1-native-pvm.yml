@@ -1,0 +1,35 @@
+name: M4.1 Native PVM Spike
+
+on:
+  workflow_dispatch:
+    inputs:
+      phase:
+        description: M4.1 phase to run
+        required: true
+        default: phase0
+        type: choice
+        options:
+          - phase0
+
+permissions:
+  contents: read
+
+jobs:
+  phase0-direct-injection:
+    if: inputs.phase == 'phase0'
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout zk-jam
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Check direct injection source
+        run: cargo test -p zk-jam-openvm-backend phase0 --lib
+      - name: Run Phase 0 OpenVM prove and verify gate
+        run: |
+          cargo test -p zk-jam-openvm-backend \
+            phase0_direct_vm_exe_proves_and_verifies \
+            --release -- --ignored --nocapture

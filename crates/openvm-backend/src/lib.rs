@@ -18,6 +18,8 @@ use openvm_stark_sdk::config::{app_params_with_100_bits_security, MAX_APP_LOG_ST
 use openvm_verify_stark_host::VmStarkProof;
 use serde::{Deserialize, Serialize};
 
+pub mod native_pvm;
+
 pub const OPENVM_VERSION: &str = "2.0.1";
 pub const OPENVM_REVISION: &str = "b820b25baab6c5d9b055f64e0286b6b1058e707c";
 pub const OPENVM_BACKEND: &str = "cpu";
@@ -106,6 +108,7 @@ pub struct OpenVmProgramArtifact {
     pub serialized_executable_size_bytes: usize,
     pub build_time_ns: u128,
     pub transpile_time_ns: u128,
+    pub native_lowering_time_ns: u128,
     exe: Arc<openvm_sdk::openvm_circuit::arch::instructions::exe::VmExe<openvm_sdk::F>>,
 }
 
@@ -120,6 +123,7 @@ impl OpenVmProgramArtifact {
             serialized_executable_size_bytes: self.serialized_executable_size_bytes,
             build_time_ns: self.build_time_ns,
             transpile_time_ns: self.transpile_time_ns,
+            native_lowering_time_ns: self.native_lowering_time_ns,
             exe: self.exe.clone(),
         }
     }
@@ -416,7 +420,41 @@ impl OpenVmBackend {
             serialized_executable_size_bytes,
             build_time_ns,
             transpile_time_ns,
+            native_lowering_time_ns: 0,
             exe,
+        })
+    }
+
+    /// Wrap a directly constructed OpenVM executable in the same artifact used by the frontend
+    /// path. This is the M4.1 injection boundary: no guest build or ELF transpilation occurs.
+    pub fn program_from_vm_exe(
+        &self,
+        benchmark: M2Benchmark,
+        exe: openvm_sdk::openvm_circuit::arch::instructions::exe::VmExe<openvm_sdk::F>,
+        emission_path: &'static str,
+    ) -> Result<OpenVmProgramArtifact> {
+        let executable_bytes =
+            exe.program.instructions_and_debug_infos.len() * 32 + exe.init_memory.len() * 8;
+        let init_memory = exe
+            .init_memory
+            .iter()
+            .map(|((address_space, address), value)| (*address_space, *address, *value))
+            .collect::<Vec<_>>();
+        let serialized_executable_size_bytes =
+            serde_json::to_vec(&(&exe.program, exe.pc_start, init_memory, &exe.fn_bounds))
+                .wrap_err("serialize direct OpenVM executable for size measurement")?
+                .len();
+        Ok(OpenVmProgramArtifact {
+            benchmark,
+            openvm_version: OPENVM_VERSION,
+            openvm_revision: OPENVM_REVISION,
+            emission_path,
+            executable_bytes,
+            serialized_executable_size_bytes,
+            build_time_ns: 0,
+            transpile_time_ns: 0,
+            native_lowering_time_ns: 0,
+            exe: Arc::new(exe),
         })
     }
 
@@ -778,6 +816,50 @@ mod tests {
             select_guest_toolchain("nightly-x86_64-unknown-linux-gnu\n"),
             "nightly"
         );
+    }
+
+    #[test]
+    fn phase0_direct_vm_exe_executes_through_existing_sdk() {
+        let backend = OpenVmBackend;
+        let native = native_pvm::NativePvmLowerer::default()
+            .phase0_arithmetic_probe()
+            .unwrap();
+        let artifact = backend
+            .program_from_vm_exe(
+                M2Benchmark::M4NativeArithmetic,
+                native.exe,
+                "NativePvm: direct OpenVM instruction injection",
+            )
+            .unwrap();
+        let execution = backend
+            .execute(&artifact, M2Input::arithmetic(7, 9))
+            .unwrap();
+        assert_eq!(execution.public_output.len(), M4_OPENVM_PUBLIC_VALUES_LEN);
+        assert_eq!(
+            u32::from_le_bytes(execution.public_output[..4].try_into().unwrap()),
+            16
+        );
+    }
+
+    #[test]
+    #[ignore = "Phase 0 proving gate; run explicitly with --ignored"]
+    fn phase0_direct_vm_exe_proves_and_verifies() {
+        let backend = OpenVmBackend;
+        let native = native_pvm::NativePvmLowerer::default()
+            .phase0_arithmetic_probe()
+            .unwrap();
+        let artifact = backend
+            .program_from_vm_exe(
+                M2Benchmark::M4NativeArithmetic,
+                native.exe,
+                "NativePvm: direct OpenVM instruction injection",
+            )
+            .unwrap();
+        let input = M2Input::arithmetic(7, 9);
+        let proof = backend.prove(&artifact, input).unwrap();
+        proof
+            .verify(&input.context_hash(&M2Benchmark::M4NativeArithmetic))
+            .unwrap();
     }
 
     #[test]
