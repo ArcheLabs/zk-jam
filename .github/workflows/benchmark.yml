@@ -12,6 +12,7 @@ on:
           - m2
           - m3
           - m4
+          - m4.1
       samples:
         description: Measured samples per case
         required: true
@@ -451,3 +452,120 @@ jobs:
             ${{ steps.result.outputs.dir }}/m4-publication.md
       - name: Publish M4 comparison to job summary
         run: cat "${{ steps.result.outputs.dir }}/m4-publication.md" >> "$GITHUB_STEP_SUMMARY"
+
+  m41-preflight:
+    if: inputs.milestone == 'm4.1'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout zk-jam
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install pinned OpenVM guest toolchain
+        run: rustup toolchain install nightly-2026-01-18 --profile minimal --component rust-src
+      - name: Run six-case execute-only gate
+        id: result
+        run: |
+          mkdir -p benchmarks/results
+          cargo run --release -p zk-jam -- bench m4.1-preflight --output benchmarks/results
+          result_dir="$(find benchmarks/results -mindepth 1 -maxdepth 1 -type d -name 'm4.1-preflight-*' | sort | tail -n 1)"
+          test -n "$result_dir"
+          test "$(jq -r '.cases | length' "$result_dir/m4.1-preflight.json")" = "6"
+          test "$(jq -r '.complete' "$result_dir/m4.1-preflight.json")" = "true"
+          echo "dir=$result_dir" >> "$GITHUB_OUTPUT"
+      - name: Upload M4.1 execute-only gate
+        uses: actions/upload-artifact@v4
+        with:
+          name: m4.1-preflight-${{ github.sha }}-${{ github.run_id }}
+          if-no-files-found: error
+          path: |
+            ${{ steps.result.outputs.dir }}/m4.1-preflight.json
+            ${{ steps.result.outputs.dir }}/m4.1-preflight.md
+      - name: Publish M4.1 gate summary
+        run: cat "${{ steps.result.outputs.dir }}/m4.1-preflight.md" >> "$GITHUB_STEP_SUMMARY"
+
+  m41-publication:
+    if: ${{ inputs.milestone == 'm4.1' && needs.m41-preflight.result == 'success' }}
+    needs: m41-preflight
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        workload:
+          - arithmetic
+          - branch
+          - memory
+    steps:
+      - name: Checkout zk-jam
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install pinned OpenVM guest toolchain
+        run: rustup toolchain install nightly-2026-01-18 --profile minimal --component rust-src
+      - name: Download M4.1 execute-only gate
+        uses: actions/download-artifact@v4
+        with:
+          name: m4.1-preflight-${{ github.sha }}-${{ github.run_id }}
+          path: artifacts/preflight
+      - name: Run DirectGuest then FrontendTranslated then NativePvm
+        run: |
+          mkdir -p benchmarks/results
+          cargo run --release -p zk-jam -- bench m4.1-publication-workload \
+            --workload "${{ matrix.workload }}" \
+            --preflight artifacts/preflight/m4.1-preflight.json \
+            --output benchmarks/results
+      - name: Upload M4.1 workload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m4.1-native-pvm-${{ matrix.workload }}-${{ github.sha }}-${{ github.run_id }}
+          if-no-files-found: ignore
+          path: benchmarks/results/m4.1-native-pvm-${{ matrix.workload }}.json
+
+  m41-publication-aggregate:
+    if: ${{ always() && inputs.milestone == 'm4.1' && needs.m41-preflight.result == 'success' }}
+    needs: [m41-preflight, m41-publication]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout zk-jam
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Download M4.1 workload reports
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: m4.1-native-pvm-*-${{ github.sha }}-${{ github.run_id }}
+          path: artifacts/publication
+          merge-multiple: true
+      - name: Aggregate M4.1 reports without proving
+        id: result
+        run: |
+          mkdir -p benchmarks/results
+          cargo run --release -p zk-jam -- bench aggregate-m4.1-publication \
+            --partial-arithmetic artifacts/publication/m4.1-native-pvm-arithmetic.json \
+            --partial-branch artifacts/publication/m4.1-native-pvm-branch.json \
+            --partial-memory artifacts/publication/m4.1-native-pvm-memory.json \
+            --output benchmarks/results
+          result_dir="$(find benchmarks/results -mindepth 1 -maxdepth 1 -type d -name 'm4.1-native-pvm-*' | sort | tail -n 1)"
+          test -n "$result_dir"
+          echo "dir=$result_dir" >> "$GITHUB_OUTPUT"
+      - name: Upload M4.1 aggregate artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: m4.1-native-pvm-${{ github.sha }}-${{ github.run_id }}
+          if-no-files-found: error
+          path: |
+            ${{ steps.result.outputs.dir }}/m4.1-native-pvm.json
+            ${{ steps.result.outputs.dir }}/m4.1-native-pvm.csv
+            ${{ steps.result.outputs.dir }}/m4.1-comparison.csv
+            ${{ steps.result.outputs.dir }}/m4.1-native-pvm.md
+      - name: Publish M4.1 comparison summary
+        run: cat "${{ steps.result.outputs.dir }}/m4.1-native-pvm.md" >> "$GITHUB_STEP_SUMMARY"
