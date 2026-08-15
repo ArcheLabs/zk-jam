@@ -1,4 +1,51 @@
-# Public M2 and M3 benchmark layout
+# Public Benchmark Layout
+
+## PVM -> OpenVM Benchmark
+
+The formal public benchmark is selected with the `pvm-openvm` milestone in
+`.github/workflows/benchmark.yml`. It measures the cost of executing and
+proving the bounded PVM fixtures through three isolated implementation paths:
+
+- Direct OpenVM Guest
+- Generated Guest
+- Direct PVM Lowering
+
+Run the semantic gate locally with:
+
+```text
+zk-jam bench pvm-openvm-preflight --output benchmarks/results
+```
+
+After the gate is complete, each workload is run on the same runner with one
+fresh worker process per implementation:
+
+```text
+zk-jam bench pvm-openvm-workload --workload arithmetic --semantic-gate path/to/pvm-openvm-preflight.json --output benchmarks/results
+```
+
+The aggregate command performs no proving:
+
+```text
+zk-jam bench pvm-openvm-aggregate --semantic-gate path/to/pvm-openvm-preflight.json \
+  --partial-arithmetic benchmarks/results/pvm-openvm-arithmetic.json \
+  --partial-branch benchmarks/results/pvm-openvm-branch.json \
+  --partial-memory benchmarks/results/pvm-openvm-memory.json \
+  --output benchmarks/results
+```
+
+Formal reports use `schema/pvm-openvm-benchmark-v1.schema.json` and produce:
+`pvm-openvm-benchmark.json`, `pvm-openvm-benchmark.csv`,
+`pvm-openvm-comparison.csv`, and `pvm-openvm-benchmark.md`.
+The semantic gate must pass all six existing cases before proof benchmarking;
+worker failure is recorded on the affected side and does not discard other
+completed implementation measurements. Ratios use Direct OpenVM Guest as the
+1.0 baseline.
+
+## Historical M4 / M4.1 Artifacts
+
+M4 and M4.1 were development milestone names. Their existing schemas and
+artifacts remain available as historical data, but they have been superseded
+by the unified PVM -> OpenVM Benchmark.
 
 The runner creates a unique `YYYYMMDD-HHMMSSZ_<git-short>_<backend>` directory below `benchmarks/results/` and mirrors publication-ready output below `benchmarks/public/`.
 

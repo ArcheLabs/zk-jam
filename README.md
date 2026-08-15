@@ -20,6 +20,8 @@ cargo run --release -p zk-jam -- bench m3 --jambda-repo /path/to/jambda --sample
 cargo run --release -p zk-jam -- bench m4 --execute-only --jambda-repo /path/to/jambda --samples 1 --warmup 0
 # after the M4 correctness artifact is available, run one workload comparison:
 cargo run --release -p zk-jam -- bench m4-publication-workload --workload arithmetic --m4-report /path/to/m4-benchmark.json --output benchmarks/results
+# historical compatibility aliases above; the formal public benchmark is:
+cargo run --release -p zk-jam -- bench pvm-openvm-preflight --output benchmarks/results
 ```
 
 See [docs/smoke-v0.md](docs/smoke-v0.md) and
@@ -27,7 +29,10 @@ See [docs/smoke-v0.md](docs/smoke-v0.md) and
 boundary, and [benchmarks/README.md](benchmarks/README.md) for public M2 and
 M3 and M4 benchmark output.
 
-M4 local runs are execute-only preflight runs. The full proof benchmark is
+The unified PVM -> OpenVM Benchmark is the public comparison of Direct OpenVM
+Guest, Generated Guest, and Direct PVM Lowering. It uses one isolated worker
+process per implementation and keeps the semantic gate separate from proof
+benchmarking. M4/M4.1 local runs are execute-only preflight runs. The full proof benchmark is
 split into one preflight job, three parallel program-specific proof jobs, and
 an aggregate job in GitHub Actions; it is intentionally not run as a local
 default because OpenVM key generation and proving are expensive. The separate

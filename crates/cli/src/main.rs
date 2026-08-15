@@ -4,12 +4,14 @@ use std::{
     process::ExitCode,
 };
 use zk_jam_benchmark::{
-    aggregate_m4_1_publication, aggregate_m4_publication, aggregate_m4_reports, report_run, run_m2,
-    run_m3, run_m3_worker, run_m4_1_preflight, run_m4_1_publication_workload, run_m4_preflight,
-    run_m4_proof_program, run_m4_publication, run_m4_publication_worker,
-    run_m4_publication_workload, run_worker, validate_m3_report, validate_m4_preflight_report,
-    validate_m4_proof_partial_report, validate_m4_publication_report, validate_m4_report,
-    verify_jambda_provenance, BenchmarkOptions, M4ProgramId,
+    aggregate_m4_1_publication, aggregate_m4_publication, aggregate_m4_reports,
+    aggregate_pvm_openvm, report_run, run_m2, run_m3, run_m3_worker, run_m4_1_preflight,
+    run_m4_1_publication_workload, run_m4_preflight, run_m4_proof_program, run_m4_publication,
+    run_m4_publication_worker, run_m4_publication_workload, run_pvm_openvm_preflight,
+    run_pvm_openvm_worker, run_pvm_openvm_workload, run_worker, validate_m3_report,
+    validate_m4_preflight_report, validate_m4_proof_partial_report, validate_m4_publication_report,
+    validate_m4_report, validate_pvm_openvm_report, verify_jambda_provenance, BenchmarkOptions,
+    M4ProgramId,
 };
 use zk_jam_openvm_backend::{M2Benchmark, M2Input, OpenVmBackend};
 use zk_jam_refine_interface::{
@@ -43,6 +45,10 @@ fn usage() {
     eprintln!("       zk-jam bench m4.1-preflight [--output benchmarks/results]");
     eprintln!("       zk-jam bench m4.1-publication-workload --workload arithmetic|branch|memory --preflight <report.json> [--output benchmarks/results]");
     eprintln!("       zk-jam bench aggregate-m4.1-publication --partial-arithmetic <report.json> --partial-branch <report.json> --partial-memory <report.json> [--output benchmarks/results]");
+    eprintln!("       zk-jam bench pvm-openvm-preflight [--output benchmarks/results]");
+    eprintln!("       zk-jam bench pvm-openvm-workload --workload arithmetic|branch|memory [--semantic-gate <report.json>] [--output benchmarks/results]");
+    eprintln!("       zk-jam bench pvm-openvm-aggregate --semantic-gate <report.json> --partial-arithmetic <report.json> --partial-branch <report.json> --partial-memory <report.json> [--output benchmarks/results]");
+    eprintln!("       zk-jam bench validate-pvm-openvm <report.json> [--schema schema.json]");
 }
 
 fn benchmark(name: &str) -> Result<(M2Benchmark, M2Input), Box<dyn std::error::Error>> {
@@ -500,6 +506,110 @@ fn bench_command(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             let report = run_m4_publication(&output, &m4_report.ok_or("M4 publication requires --m4-report")?)?;
             println!("M4 publication status: {}\nM4 comparison complete: {}", report.comparison_status, report.comparison_complete);
         }
+        Some("pvm-openvm-preflight") => {
+            let mut output = PathBuf::from("benchmarks/results");
+            let mut index = 2;
+            while index < args.len() {
+                match args[index].as_str() {
+                    "--output" => {
+                        output = PathBuf::from(args.get(index + 1).ok_or("missing --output value")?);
+                        index += 2;
+                    }
+                    other => return Err(format!("unknown PVM -> OpenVM preflight option: {other}").into()),
+                }
+            }
+            let report = run_pvm_openvm_preflight(&output)?;
+            println!("PVM -> OpenVM semantic gate complete: {}", report.complete);
+            if !report.complete {
+                return Err("PVM -> OpenVM semantic gate failed".into());
+            }
+        }
+        Some("pvm-openvm-workload") => {
+            let mut output = PathBuf::from("benchmarks/results");
+            let mut semantic_gate = None;
+            let mut workload = None;
+            let mut index = 2;
+            while index < args.len() {
+                match args[index].as_str() {
+                    "--output" => {
+                        output = PathBuf::from(args.get(index + 1).ok_or("missing --output value")?);
+                        index += 2;
+                    }
+                    "--semantic-gate" => {
+                        semantic_gate = Some(PathBuf::from(args.get(index + 1).ok_or("missing --semantic-gate value")?));
+                        index += 2;
+                    }
+                    "--workload" => {
+                        workload = Some(args.get(index + 1).ok_or("missing --workload value")?.clone());
+                        index += 2;
+                    }
+                    other => return Err(format!("unknown PVM -> OpenVM workload option: {other}").into()),
+                }
+            }
+            let workload = workload.ok_or("PVM -> OpenVM workload requires --workload")?;
+            let workload = match workload.as_str() {
+                "arithmetic" => M4ProgramId::Arithmetic,
+                "branch" => M4ProgramId::Branch,
+                "memory" | "memory-16k" => M4ProgramId::Memory16K,
+                other => return Err(format!("unknown PVM -> OpenVM workload: {other}").into()),
+            };
+            let gate = semantic_gate.ok_or("PVM -> OpenVM workload requires --semantic-gate")?;
+            let report = run_pvm_openvm_workload(&output, &gate, workload)?;
+            println!("PVM -> OpenVM workload {} complete: {}", report.workload, report.semantics_match);
+            if !report.semantics_match {
+                return Err("PVM -> OpenVM workload failed".into());
+            }
+        }
+        Some("pvm-openvm-aggregate") => {
+            let mut output = PathBuf::from("benchmarks/results");
+            let mut semantic_gate = None;
+            let mut partials = [None, None, None];
+            let mut index = 2;
+            while index < args.len() {
+                match args[index].as_str() {
+                    "--output" => {
+                        output = PathBuf::from(args.get(index + 1).ok_or("missing --output value")?);
+                        index += 2;
+                    }
+                    "--semantic-gate" => {
+                        semantic_gate = Some(PathBuf::from(args.get(index + 1).ok_or("missing --semantic-gate value")?));
+                        index += 2;
+                    }
+                    "--partial-arithmetic" => {
+                        partials[0] = Some(PathBuf::from(args.get(index + 1).ok_or("missing --partial-arithmetic value")?));
+                        index += 2;
+                    }
+                    "--partial-branch" => {
+                        partials[1] = Some(PathBuf::from(args.get(index + 1).ok_or("missing --partial-branch value")?));
+                        index += 2;
+                    }
+                    "--partial-memory" => {
+                        partials[2] = Some(PathBuf::from(args.get(index + 1).ok_or("missing --partial-memory value")?));
+                        index += 2;
+                    }
+                    other => return Err(format!("unknown PVM -> OpenVM aggregate option: {other}").into()),
+                }
+            }
+            let report = aggregate_pvm_openvm(
+                &output,
+                &semantic_gate.ok_or("PVM -> OpenVM aggregate requires --semantic-gate")?,
+                [
+                    partials[0].as_deref().ok_or("missing --partial-arithmetic")?,
+                    partials[1].as_deref().ok_or("missing --partial-branch")?,
+                    partials[2].as_deref().ok_or("missing --partial-memory")?,
+                ],
+            )?;
+            println!("PVM -> OpenVM status: {}\ncomparison complete: {}", report.comparison_status, report.comparison_complete);
+        }
+        Some("validate-pvm-openvm") => {
+            let report = PathBuf::from(args.get(2).ok_or("missing PVM -> OpenVM report path")?);
+            let schema = args.iter().position(|arg| arg == "--schema")
+                .and_then(|index| args.get(index + 1))
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("benchmarks/schema/pvm-openvm-benchmark-v1.schema.json"));
+            validate_pvm_openvm_report(&report, &schema)?;
+            println!("PVM -> OpenVM report valid: {}", report.display());
+        }
         Some("m4.1-preflight") => {
             let mut output = PathBuf::from("benchmarks/results");
             let mut index = 2;
@@ -842,11 +952,80 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        (Some("__pvm-openvm-worker"), _) => match pvm_openvm_worker_command(&argv) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("zk-jam PVM -> OpenVM worker: {error}");
+                ExitCode::FAILURE
+            }
+        },
         _ => {
             usage();
             ExitCode::FAILURE
         }
     }
+}
+
+fn pvm_openvm_worker_command(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let mut implementation = None;
+    let mut workload = None;
+    let mut a = None;
+    let mut b = None;
+    let mut output = None;
+    let mut index = 1;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--implementation" => {
+                implementation = Some(
+                    args.get(index + 1)
+                        .ok_or("missing --implementation value")?
+                        .clone(),
+                );
+                index += 2;
+            }
+            "--workload" => {
+                workload = Some(
+                    args.get(index + 1)
+                        .ok_or("missing --workload value")?
+                        .clone(),
+                );
+                index += 2;
+            }
+            "--a" => {
+                a = Some(
+                    args.get(index + 1)
+                        .ok_or("missing --a value")?
+                        .parse::<u32>()?,
+                );
+                index += 2;
+            }
+            "--b" => {
+                b = Some(
+                    args.get(index + 1)
+                        .ok_or("missing --b value")?
+                        .parse::<u32>()?,
+                );
+                index += 2;
+            }
+            "--output" => {
+                output = Some(PathBuf::from(
+                    args.get(index + 1).ok_or("missing --output value")?,
+                ));
+                index += 2;
+            }
+            other => return Err(format!("unknown PVM -> OpenVM worker option: {other}").into()),
+        }
+    }
+    run_pvm_openvm_worker(
+        &implementation.ok_or("worker requires --implementation")?,
+        &workload.ok_or("worker requires --workload")?,
+        [
+            a.ok_or("worker requires --a")?,
+            b.ok_or("worker requires --b")?,
+        ],
+        &output.ok_or("worker requires --output")?,
+    )?;
+    Ok(())
 }
 
 fn m3_worker_command(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {

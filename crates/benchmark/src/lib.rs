@@ -17,6 +17,7 @@ use zk_jam_translation::{translate_workload, workload_program, M3Workload, JAMBD
 
 mod m4;
 mod m4_native_pvm;
+mod pvm_openvm;
 pub use m4::{
     aggregate_m4_publication, aggregate_m4_reports, m4_case_specs, m4_program_specs, run_m4,
     run_m4_preflight, run_m4_proof_program, run_m4_publication, run_m4_publication_worker,
@@ -28,6 +29,10 @@ pub use m4::{
 pub use m4_native_pvm::{
     aggregate_m4_1_publication, run_m4_1_preflight, run_m4_1_publication_workload,
     M41BenchmarkReport, M41PreflightReport, M41WorkloadReport,
+};
+pub use pvm_openvm::{
+    aggregate_pvm_openvm, run_pvm_openvm_preflight, run_pvm_openvm_worker, run_pvm_openvm_workload,
+    validate_pvm_openvm_report, PvmOpenVmBenchmarkReport, PvmOpenVmSemanticGate, PvmOpenVmWorkload,
 };
 
 pub use zk_jam_refine_interface::RefineCaseV1;
