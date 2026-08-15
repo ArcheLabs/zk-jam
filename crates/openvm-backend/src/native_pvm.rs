@@ -386,15 +386,11 @@ impl NativePvmLowerer {
                 let false_pc = *pc_map
                     .get(false_block as usize)
                     .ok_or(NativePvmError::InvalidBlock(false_block))?;
-                output.push(Instruction::large_from_isize(
-                    VmOpcode::from_usize(branch_opcode(opcode)?),
-                    self.register_map.pointer(left)? as isize,
-                    self.register_map.pointer(right)? as isize,
+                output.push(branch_instruction(
+                    branch_opcode(opcode)?,
+                    self.register_map.pointer(left)?,
+                    self.register_map.pointer(right)?,
                     branch_displacement(true_pc, terminator_pc)?,
-                    1,
-                    1,
-                    0,
-                    0,
                 ));
                 output.push(jump_instruction(branch_displacement(
                     false_pc,
@@ -442,7 +438,7 @@ impl NativePvmLowerer {
             GenericInstruction::Move {
                 destination,
                 source,
-            } => output.push(alu_immediate(
+            } => output.push(base_alu_immediate(
                 BASE_ALU_ADD,
                 self.register_map.pointer(*destination)?,
                 self.register_map.pointer(*source)?,
@@ -452,7 +448,7 @@ impl NativePvmLowerer {
                 destination,
                 left,
                 right,
-            } => output.push(alu_register(
+            } => output.push(base_alu_register(
                 BASE_ALU_ADD,
                 self.register_map.pointer(*destination)?,
                 self.register_map.pointer(*left)?,
@@ -462,7 +458,7 @@ impl NativePvmLowerer {
                 destination,
                 left,
                 right,
-            } => output.push(alu_register(
+            } => output.push(base_alu_register(
                 BASE_ALU_SUB,
                 self.register_map.pointer(*destination)?,
                 self.register_map.pointer(*left)?,
@@ -472,8 +468,7 @@ impl NativePvmLowerer {
                 destination,
                 left,
                 right,
-            } => output.push(alu_register(
-                MUL,
+            } => output.push(mul_register(
                 self.register_map.pointer(*destination)?,
                 self.register_map.pointer(*left)?,
                 self.register_map.pointer(*right)?,
@@ -482,7 +477,7 @@ impl NativePvmLowerer {
                 destination,
                 left,
                 right,
-            } => output.push(alu_register(
+            } => output.push(base_alu_register(
                 BASE_ALU_XOR,
                 self.register_map.pointer(*destination)?,
                 self.register_map.pointer(*left)?,
@@ -571,7 +566,7 @@ impl NativePvmLowerer {
                 1,
             ));
             if index == 0 {
-                output.push(alu_immediate(
+                output.push(base_alu_immediate(
                     BASE_ALU_ADD,
                     INPUT_PTR_SLOT,
                     INPUT_PTR_SLOT,
@@ -655,18 +650,13 @@ impl NativePvmLowerer {
                     2,
                     1,
                 ));
-                output.push(alu_immediate(SHIFT_SRL, source, source, 8));
+                output.push(base_alu_immediate(SHIFT_SRL, source, source, 8));
             }
         }
-        output.push(Instruction::large_from_isize(
-            VmOpcode::from_usize(SHA256),
-            SHA_DIGEST_PTR_SLOT as isize,
-            SHA_STATE_PTR_SLOT as isize,
-            SHA_INPUT_PTR_SLOT as isize,
-            1,
-            2,
-            0,
-            0,
+        output.push(sha256_instruction(
+            SHA_DIGEST_PTR_SLOT,
+            SHA_STATE_PTR_SLOT,
+            SHA_INPUT_PTR_SLOT,
         ));
         for index in 0..8 {
             output.push(memory_instruction(
@@ -739,7 +729,7 @@ fn branch_displacement(target_pc: u32, current_pc: u32) -> Result<isize, NativeP
     Ok(displacement as isize)
 }
 
-fn alu_register(opcode: usize, destination: u32, left: u32, right: u32) -> Instruction<F> {
+fn base_alu_register(opcode: usize, destination: u32, left: u32, right: u32) -> Instruction<F> {
     Instruction::large_from_isize(
         VmOpcode::from_usize(opcode),
         destination as isize,
@@ -752,7 +742,12 @@ fn alu_register(opcode: usize, destination: u32, left: u32, right: u32) -> Instr
     )
 }
 
-fn alu_immediate(opcode: usize, destination: u32, left: u32, immediate: i32) -> Instruction<F> {
+fn base_alu_immediate(
+    opcode: usize,
+    destination: u32,
+    left: u32,
+    immediate: i32,
+) -> Instruction<F> {
     Instruction::large_from_isize(
         VmOpcode::from_usize(opcode),
         destination as isize,
@@ -765,22 +760,39 @@ fn alu_immediate(opcode: usize, destination: u32, left: u32, immediate: i32) -> 
     )
 }
 
+fn mul_register(destination: u32, left: u32, right: u32) -> Instruction<F> {
+    Instruction::large_from_isize(
+        VmOpcode::from_usize(MUL),
+        destination as isize,
+        left as isize,
+        right as isize,
+        1,
+        0,
+        0,
+        0,
+    )
+}
+
 fn load_u32_instructions(destination: u32, value: u32) -> Vec<Instruction<F>> {
     let upper = ((value as i64 + 0x800) >> 12) as i32;
     let lower = value as i32 - (upper << 12);
     vec![
-        Instruction::large_from_isize(
-            VmOpcode::from_usize(LUI),
-            destination as isize,
-            0,
-            upper as isize,
-            1,
-            0,
-            1,
-            0,
-        ),
-        alu_immediate(BASE_ALU_ADD, destination, destination, lower),
+        lui_instruction(destination, upper),
+        base_alu_immediate(BASE_ALU_ADD, destination, destination, lower),
     ]
+}
+
+fn lui_instruction(destination: u32, immediate: i32) -> Instruction<F> {
+    Instruction::large_from_isize(
+        VmOpcode::from_usize(LUI),
+        destination as isize,
+        0,
+        immediate as isize,
+        1,
+        0,
+        1,
+        0,
+    )
 }
 
 fn memory_instruction(
@@ -816,6 +828,19 @@ fn hint_store(pointer_slot: u32) -> Instruction<F> {
     )
 }
 
+fn sha256_instruction(destination: u32, state: u32, input: u32) -> Instruction<F> {
+    Instruction::large_from_isize(
+        VmOpcode::from_usize(SHA256),
+        destination as isize,
+        state as isize,
+        input as isize,
+        1,
+        RV32_MEMORY_AS as isize,
+        0,
+        0,
+    )
+}
+
 fn reveal(source: u32, index_slot: u32, _offset: u32) -> Instruction<F> {
     Instruction::large_from_isize(
         VmOpcode::from_usize(LOAD_STORE_STOREW),
@@ -830,11 +855,24 @@ fn reveal(source: u32, index_slot: u32, _offset: u32) -> Instruction<F> {
 }
 
 fn advance_public_index() -> Instruction<F> {
-    alu_immediate(BASE_ALU_ADD, PUBLIC_INDEX_SLOT, PUBLIC_INDEX_SLOT, 4)
+    base_alu_immediate(BASE_ALU_ADD, PUBLIC_INDEX_SLOT, PUBLIC_INDEX_SLOT, 4)
 }
 
 fn jump_instruction(displacement: isize) -> Instruction<F> {
     Instruction::large_from_isize(VmOpcode::from_usize(JAL), 0, 0, displacement, 1, 0, 0, 0)
+}
+
+fn branch_instruction(opcode: usize, left: u32, right: u32, displacement: isize) -> Instruction<F> {
+    Instruction::large_from_isize(
+        VmOpcode::from_usize(opcode),
+        left as isize,
+        right as isize,
+        displacement,
+        1,
+        1,
+        0,
+        0,
+    )
 }
 
 fn imm24(value: i64) -> isize {
@@ -846,12 +884,17 @@ fn terminate() -> Instruction<F> {
 }
 
 fn byte_swap_word(source: u32, accumulator: u32, temporary: u32) -> Vec<Instruction<F>> {
-    let mut output = vec![alu_immediate(BASE_ALU_ADD, accumulator, 0, 0)];
+    let mut output = vec![base_alu_immediate(BASE_ALU_ADD, accumulator, 0, 0)];
     for (left_shift, result_shift) in [(24, 24), (16, 16), (8, 8), (0, 0)] {
-        output.push(alu_immediate(SHIFT_SLL, temporary, source, left_shift));
-        output.push(alu_immediate(SHIFT_SRL, temporary, temporary, 24));
-        output.push(alu_immediate(SHIFT_SLL, temporary, temporary, result_shift));
-        output.push(alu_register(
+        output.push(base_alu_immediate(SHIFT_SLL, temporary, source, left_shift));
+        output.push(base_alu_immediate(SHIFT_SRL, temporary, temporary, 24));
+        output.push(base_alu_immediate(
+            SHIFT_SLL,
+            temporary,
+            temporary,
+            result_shift,
+        ));
+        output.push(base_alu_register(
             BASE_ALU_OR,
             accumulator,
             accumulator,
@@ -870,7 +913,98 @@ fn write_u32(image: &mut BTreeMap<(u32, u32), u8>, address_space: u32, address: 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use openvm_stark_backend::p3_field::PrimeField32;
     use zk_jam_translation::{workload_program, M3Workload};
+
+    fn assert_encoding(instruction: Instruction<F>, opcode: usize, operands: [u32; 7]) {
+        assert_eq!(instruction.opcode, VmOpcode::from_usize(opcode));
+        let actual = instruction
+            .operands()
+            .into_iter()
+            .map(|value| value.as_canonical_u32())
+            .collect::<Vec<_>>();
+        assert_eq!(actual, operands);
+    }
+
+    #[test]
+    fn instruction_helpers_match_pinned_openvm_encoding() {
+        assert_encoding(
+            base_alu_register(BASE_ALU_ADD, 4, 8, 12),
+            BASE_ALU_ADD,
+            [4, 8, 12, 1, 1, 0, 0],
+        );
+        assert_encoding(
+            base_alu_register(BASE_ALU_SUB, 4, 8, 12),
+            BASE_ALU_SUB,
+            [4, 8, 12, 1, 1, 0, 0],
+        );
+        assert_encoding(
+            base_alu_register(BASE_ALU_XOR, 4, 8, 12),
+            BASE_ALU_XOR,
+            [4, 8, 12, 1, 1, 0, 0],
+        );
+        assert_encoding(
+            base_alu_register(BASE_ALU_OR, 4, 8, 12),
+            BASE_ALU_OR,
+            [4, 8, 12, 1, 1, 0, 0],
+        );
+        assert_encoding(mul_register(4, 8, 12), MUL, [4, 8, 12, 1, 0, 0, 0]);
+        assert_encoding(
+            base_alu_immediate(BASE_ALU_ADD, 4, 8, 0x123),
+            BASE_ALU_ADD,
+            [4, 8, 0x123, 1, 0, 0, 0],
+        );
+        assert_encoding(
+            lui_instruction(4, 0x12345),
+            LUI,
+            [4, 0, 0x12345, 1, 0, 1, 0],
+        );
+        assert_encoding(
+            memory_instruction(LOAD_STORE_LOADW, 4, 60, 0x1234, 2, 1),
+            LOAD_STORE_LOADW,
+            [4, 60, 0x1234, 1, 2, 1, 0],
+        );
+        assert_encoding(
+            memory_instruction(LOAD_STORE_STOREW, 4, 60, 0x1234, 2, 1),
+            LOAD_STORE_STOREW,
+            [4, 60, 0x1234, 1, 2, 1, 0],
+        );
+        assert_encoding(
+            memory_instruction(LOAD_STORE_STOREB, 4, 60, 0x1234, 2, 1),
+            LOAD_STORE_STOREB,
+            [4, 60, 0x1234, 1, 2, 1, 0],
+        );
+        for opcode in [
+            BRANCH_BEQ,
+            BRANCH_BNE,
+            BRANCH_BLT,
+            BRANCH_BLTU,
+            BRANCH_BGE,
+            BRANCH_BGEU,
+        ] {
+            assert_encoding(
+                branch_instruction(opcode, 4, 8, 16),
+                opcode,
+                [4, 8, 16, 1, 1, 0, 0],
+            );
+        }
+        assert_encoding(jump_instruction(16), JAL, [0, 0, 16, 1, 0, 0, 0]);
+        assert_encoding(
+            hint_store(INPUT_PTR_SLOT),
+            HINT_STOREW,
+            [0, 52, 0, 1, 2, 0, 0],
+        );
+        assert_encoding(
+            sha256_instruction(SHA_DIGEST_PTR_SLOT, SHA_STATE_PTR_SLOT, SHA_INPUT_PTR_SLOT),
+            SHA256,
+            [76, 72, 68, 1, 2, 0, 0],
+        );
+        assert_encoding(
+            reveal(4, PUBLIC_INDEX_SLOT, 0),
+            LOAD_STORE_STOREW,
+            [4, 56, 0, 1, 3, 1, 0],
+        );
+    }
 
     #[test]
     fn register_mapping_is_fixed_and_deterministic() {

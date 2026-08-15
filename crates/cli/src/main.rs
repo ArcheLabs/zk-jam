@@ -8,7 +8,7 @@ use zk_jam_benchmark::{
     aggregate_pvm_openvm, report_run, run_m2, run_m3, run_m3_worker, run_m4_1_preflight,
     run_m4_1_publication_workload, run_m4_preflight, run_m4_proof_program, run_m4_publication,
     run_m4_publication_worker, run_m4_publication_workload, run_pvm_openvm_preflight,
-    run_pvm_openvm_worker, run_pvm_openvm_workload, run_worker, validate_m3_report,
+    run_pvm_openvm_worker, run_pvm_openvm_workload_filtered, run_worker, validate_m3_report,
     validate_m4_preflight_report, validate_m4_proof_partial_report, validate_m4_publication_report,
     validate_m4_report, validate_pvm_openvm_report, verify_jambda_provenance, BenchmarkOptions,
     M4ProgramId,
@@ -40,6 +40,7 @@ fn usage() {
     eprintln!("       zk-jam bench m4-proof --program arithmetic|branch|memory --jambda-repo <checkout> [--output benchmarks/results]");
     eprintln!("       zk-jam bench aggregate-m4 --preflight <report.json> --proof-arithmetic <report.json> --proof-branch <report.json> --proof-memory <report.json> [--output benchmarks/results]");
     eprintln!("       zk-jam bench m4-publication-workload --workload arithmetic|branch|memory --m4-report <report.json> [--output benchmarks/results]");
+    eprintln!("       zk-jam bench pvm-openvm-workload --workload arithmetic|branch|memory --semantic-gate <report.json> [--only direct_openvm_guest|generated_guest|direct_pvm_lowering] [--output benchmarks/results]");
     eprintln!("       zk-jam bench aggregate-m4-publication --m4-report <report.json> --partial-arithmetic <report.json> --partial-branch <report.json> --partial-memory <report.json> [--output benchmarks/results]");
     eprintln!("       zk-jam bench m4-publication --m4-report <report.json> [--output benchmarks/results]");
     eprintln!("       zk-jam bench m4.1-preflight [--output benchmarks/results]");
@@ -528,6 +529,7 @@ fn bench_command(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             let mut output = PathBuf::from("benchmarks/results");
             let mut semantic_gate = None;
             let mut workload = None;
+            let mut only = None;
             let mut index = 2;
             while index < args.len() {
                 match args[index].as_str() {
@@ -543,6 +545,10 @@ fn bench_command(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
                         workload = Some(args.get(index + 1).ok_or("missing --workload value")?.clone());
                         index += 2;
                     }
+                    "--only" => {
+                        only = Some(args.get(index + 1).ok_or("missing --only value")?.clone());
+                        index += 2;
+                    }
                     other => return Err(format!("unknown PVM -> OpenVM workload option: {other}").into()),
                 }
             }
@@ -554,7 +560,12 @@ fn bench_command(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
                 other => return Err(format!("unknown PVM -> OpenVM workload: {other}").into()),
             };
             let gate = semantic_gate.ok_or("PVM -> OpenVM workload requires --semantic-gate")?;
-            let report = run_pvm_openvm_workload(&output, &gate, workload)?;
+            let report = run_pvm_openvm_workload_filtered(
+                &output,
+                &gate,
+                workload,
+                only.as_deref(),
+            )?;
             println!("PVM -> OpenVM workload {} complete: {}", report.workload, report.semantics_match);
             if !report.semantics_match {
                 return Err("PVM -> OpenVM workload failed".into());

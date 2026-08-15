@@ -32,7 +32,8 @@ pub use m4_native_pvm::{
 };
 pub use pvm_openvm::{
     aggregate_pvm_openvm, run_pvm_openvm_preflight, run_pvm_openvm_worker, run_pvm_openvm_workload,
-    validate_pvm_openvm_report, PvmOpenVmBenchmarkReport, PvmOpenVmSemanticGate, PvmOpenVmWorkload,
+    run_pvm_openvm_workload_filtered, validate_pvm_openvm_report, PvmOpenVmBenchmarkReport,
+    PvmOpenVmSemanticGate, PvmOpenVmWorkload,
 };
 
 pub use zk_jam_refine_interface::RefineCaseV1;

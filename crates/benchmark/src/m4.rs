@@ -431,12 +431,27 @@ pub(crate) struct M4BuiltProgram {
 }
 
 pub(crate) fn build_m4_program(backend: &OpenVmBackend, id: M4ProgramId) -> Result<M4BuiltProgram> {
+    build_m4_program_with_label(backend, id, "M4")
+}
+
+pub(crate) fn build_pvm_openvm_generated_program(
+    backend: &OpenVmBackend,
+    id: M4ProgramId,
+) -> Result<M4BuiltProgram> {
+    build_m4_program_with_label(backend, id, "PVM→OpenVM][Generated Guest")
+}
+
+fn build_m4_program_with_label(
+    backend: &OpenVmBackend,
+    id: M4ProgramId,
+    log_label: &str,
+) -> Result<M4BuiltProgram> {
     let program = workload_program(id.workload());
     let translation_started = Instant::now();
     let translated = translate(&program)?;
     let translation_ns = translation_started.elapsed().as_nanos();
     println!(
-        "[M4][{}] translation: {} ms",
+        "[{log_label}][{}] translation: {} ms",
         id.name(),
         translation_ns as f64 / 1_000_000.0
     );
@@ -453,7 +468,7 @@ pub(crate) fn build_m4_program(backend: &OpenVmBackend, id: M4ProgramId) -> Resu
     let artifact = backend.program_from_guest_dir(id.benchmark(), &guest_dir, "m4-generated-v1")?;
     let _ = fs::remove_dir_all(&guest_dir);
     println!(
-        "[M4][{}] build: {} s, transpile: {} ms",
+        "[{log_label}][{}] build: {} s, transpile: {} ms",
         id.name(),
         artifact.build_time_ns as f64 / 1_000_000_000.0,
         artifact.transpile_time_ns as f64 / 1_000_000.0

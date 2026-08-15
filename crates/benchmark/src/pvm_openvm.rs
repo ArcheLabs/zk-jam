@@ -19,11 +19,16 @@ use zk_jam_translation::{
 
 use crate::{
     environment_report,
-    m4::{build_m4_program, m4_case_specs, M4ProgramId},
+    m4::{build_pvm_openvm_generated_program, m4_case_specs, M4ProgramId},
     read_json, write_json, EnvironmentReport,
 };
 
 pub const PVM_OPENVM_SCHEMA_VERSION: &str = "pvm-openvm-benchmark-v1";
+const PVM_OPENVM_IMPLEMENTATIONS: [&str; 3] = [
+    "direct_openvm_guest",
+    "generated_guest",
+    "direct_pvm_lowering",
+];
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PvmOpenVmSemanticCase {
@@ -198,7 +203,7 @@ pub fn run_pvm_openvm_preflight(output_root: &Path) -> Result<PvmOpenVmSemanticG
     let backend = OpenVmBackend;
     let mut artifacts = Vec::new();
     for workload in M4ProgramId::ALL {
-        let generated = build_m4_program(&backend, workload)?;
+        let generated = build_pvm_openvm_generated_program(&backend, workload)?;
         let direct = backend.m4_native_program(native_benchmark(workload))?;
         let lowered =
             NativePvmLowerer::default().lower(&generated.program, workload.output_register())?;
@@ -299,7 +304,7 @@ fn worker_artifact(implementation: &str, workload: M4ProgramId) -> Result<Worker
             generated_ir_instruction_count: 0,
         }),
         "generated_guest" => {
-            let built = build_m4_program(&backend, workload)?;
+            let built = build_pvm_openvm_generated_program(&backend, workload)?;
             let count = built.translated.translated_instruction_count();
             Ok(WorkerArtifact {
                 artifact: built.artifact,
@@ -545,32 +550,62 @@ pub fn run_pvm_openvm_workload(
     semantic_gate_path: &Path,
     workload: M4ProgramId,
 ) -> Result<PvmOpenVmWorkload> {
+    run_pvm_openvm_workload_filtered(output_root, semantic_gate_path, workload, None)
+}
+
+pub fn run_pvm_openvm_workload_filtered(
+    output_root: &Path,
+    semantic_gate_path: &Path,
+    workload: M4ProgramId,
+    only: Option<&str>,
+) -> Result<PvmOpenVmWorkload> {
     let gate: PvmOpenVmSemanticGate = read_json(semantic_gate_path)?;
     if !gate.complete {
         return Err(eyre!(
             "PVM -> OpenVM benchmark requires a complete semantic gate"
         ));
     }
+    if let Some(only) = only {
+        if !PVM_OPENVM_IMPLEMENTATIONS.contains(&only) {
+            return Err(eyre!("unknown PVM -> OpenVM implementation filter: {only}"));
+        }
+    }
     fs::create_dir_all(output_root)?;
     let input = representative_input(workload);
     let (source, _, expected) = expected_statement(workload, input)?;
     let generated_ir_instruction_count = translate(&source)?.translated_instruction_count();
     let mut workers = Vec::new();
-    for implementation in [
-        "direct_openvm_guest",
-        "generated_guest",
-        "direct_pvm_lowering",
-    ] {
-        workers.push(collect_worker(output_root, workload, input, implementation));
+    for implementation in PVM_OPENVM_IMPLEMENTATIONS {
+        workers.push(if only.is_none() || only == Some(implementation) {
+            collect_worker(output_root, workload, input, implementation)
+        } else {
+            PvmOpenVmWorkerOutput {
+                implementation: implementation.to_string(),
+                side: failed_side(format!("implementation not selected by --only={only:?}")),
+                source_pvm_instruction_count: source.instruction_count(),
+                generated_ir_instruction_count: 0,
+                translation_ns: None,
+                emission_ns: None,
+                lowered_openvm_instruction_count: None,
+            }
+        });
     }
     let direct = &workers[0];
     let generated = &workers[1];
     let lowering = &workers[2];
-    let semantics_match = workers.iter().all(|worker| {
-        worker.side.error.is_none()
-            && worker.side.proof_verified
-            && worker.side.output_hex.as_deref() == Some(hex(&expected.public_output).as_str())
-    });
+    let semantics_match =
+        workers
+            .iter()
+            .zip(PVM_OPENVM_IMPLEMENTATIONS)
+            .all(|(worker, implementation)| {
+                if only.is_some() && only != Some(implementation) {
+                    return true;
+                }
+                worker.side.error.is_none()
+                    && worker.side.proof_verified
+                    && worker.side.output_hex.as_deref()
+                        == Some(hex(&expected.public_output).as_str())
+            });
     let report = PvmOpenVmWorkload {
         workload: public_name(workload).to_string(),
         input,
