@@ -4,8 +4,9 @@ use std::{
     process::ExitCode,
 };
 use zk_jam_benchmark::{
-    aggregate_m4_publication, aggregate_m4_reports, report_run, run_m2, run_m3, run_m3_worker,
-    run_m4_preflight, run_m4_proof_program, run_m4_publication, run_m4_publication_worker,
+    aggregate_m4_1_publication, aggregate_m4_publication, aggregate_m4_reports, report_run, run_m2,
+    run_m3, run_m3_worker, run_m4_1_preflight, run_m4_1_publication_workload, run_m4_preflight,
+    run_m4_proof_program, run_m4_publication, run_m4_publication_worker,
     run_m4_publication_workload, run_worker, validate_m3_report, validate_m4_preflight_report,
     validate_m4_proof_partial_report, validate_m4_publication_report, validate_m4_report,
     verify_jambda_provenance, BenchmarkOptions, M4ProgramId,
@@ -39,6 +40,9 @@ fn usage() {
     eprintln!("       zk-jam bench m4-publication-workload --workload arithmetic|branch|memory --m4-report <report.json> [--output benchmarks/results]");
     eprintln!("       zk-jam bench aggregate-m4-publication --m4-report <report.json> --partial-arithmetic <report.json> --partial-branch <report.json> --partial-memory <report.json> [--output benchmarks/results]");
     eprintln!("       zk-jam bench m4-publication --m4-report <report.json> [--output benchmarks/results]");
+    eprintln!("       zk-jam bench m4.1-preflight [--output benchmarks/results]");
+    eprintln!("       zk-jam bench m4.1-publication-workload --workload arithmetic|branch|memory --preflight <report.json> [--output benchmarks/results]");
+    eprintln!("       zk-jam bench aggregate-m4.1-publication --partial-arithmetic <report.json> --partial-branch <report.json> --partial-memory <report.json> [--output benchmarks/results]");
 }
 
 fn benchmark(name: &str) -> Result<(M2Benchmark, M2Input), Box<dyn std::error::Error>> {
@@ -495,6 +499,93 @@ fn bench_command(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             }
             let report = run_m4_publication(&output, &m4_report.ok_or("M4 publication requires --m4-report")?)?;
             println!("M4 publication status: {}\nM4 comparison complete: {}", report.comparison_status, report.comparison_complete);
+        }
+        Some("m4.1-preflight") => {
+            let mut output = PathBuf::from("benchmarks/results");
+            let mut index = 2;
+            while index < args.len() {
+                match args[index].as_str() {
+                    "--output" => {
+                        output = PathBuf::from(args.get(index + 1).ok_or("missing --output value")?);
+                        index += 2;
+                    }
+                    other => return Err(format!("unknown M4.1 preflight option: {other}").into()),
+                }
+            }
+            let report = run_m4_1_preflight(&output)?;
+            println!("M4.1 execute-only preflight complete: {}", report.complete);
+            if !report.complete {
+                return Err("M4.1 execute-only preflight failed".into());
+            }
+        }
+        Some("m4.1-publication-workload") => {
+            let mut output = PathBuf::from("benchmarks/results");
+            let mut preflight = None;
+            let mut workload = None;
+            let mut index = 2;
+            while index < args.len() {
+                match args[index].as_str() {
+                    "--output" => {
+                        output = PathBuf::from(args.get(index + 1).ok_or("missing --output value")?);
+                        index += 2;
+                    }
+                    "--preflight" => {
+                        preflight = Some(PathBuf::from(args.get(index + 1).ok_or("missing --preflight value")?));
+                        index += 2;
+                    }
+                    "--workload" => {
+                        workload = Some(match args.get(index + 1).ok_or("missing --workload value")?.as_str() {
+                            "arithmetic" => M4ProgramId::Arithmetic,
+                            "branch" => M4ProgramId::Branch,
+                            "memory" => M4ProgramId::Memory16K,
+                            other => return Err(format!("unknown M4.1 workload: {other}").into()),
+                        });
+                        index += 2;
+                    }
+                    other => return Err(format!("unknown M4.1 publication option: {other}").into()),
+                }
+            }
+            let report = run_m4_1_publication_workload(
+                &output,
+                &preflight.ok_or("M4.1 publication requires --preflight")?,
+                workload.ok_or("M4.1 publication requires --workload")?,
+            )?;
+            println!("M4.1 workload {} complete: {}", report.workload, report.semantics_match);
+        }
+        Some("aggregate-m4.1-publication") => {
+            let mut output = PathBuf::from("benchmarks/results");
+            let mut partials = [None, None, None];
+            let mut index = 2;
+            while index < args.len() {
+                match args[index].as_str() {
+                    "--output" => {
+                        output = PathBuf::from(args.get(index + 1).ok_or("missing --output value")?);
+                        index += 2;
+                    }
+                    "--partial-arithmetic" => {
+                        partials[0] = Some(PathBuf::from(args.get(index + 1).ok_or("missing --partial-arithmetic value")?));
+                        index += 2;
+                    }
+                    "--partial-branch" => {
+                        partials[1] = Some(PathBuf::from(args.get(index + 1).ok_or("missing --partial-branch value")?));
+                        index += 2;
+                    }
+                    "--partial-memory" => {
+                        partials[2] = Some(PathBuf::from(args.get(index + 1).ok_or("missing --partial-memory value")?));
+                        index += 2;
+                    }
+                    other => return Err(format!("unknown M4.1 aggregate option: {other}").into()),
+                }
+            }
+            let report = aggregate_m4_1_publication(
+                &output,
+                [
+                    partials[0].as_deref().unwrap_or(Path::new("")),
+                    partials[1].as_deref().unwrap_or(Path::new("")),
+                    partials[2].as_deref().unwrap_or(Path::new("")),
+                ],
+            )?;
+            println!("M4.1 publication status: {}", report.comparison_status);
         }
         Some("m4") => {
             let mut output = PathBuf::from("benchmarks/results");

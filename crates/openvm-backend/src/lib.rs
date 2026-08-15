@@ -657,6 +657,10 @@ fn sdk_for_benchmark(benchmark: &M2Benchmark) -> OpenVmSdk {
             .config
             .clone()
             .with_public_values(M4_OPENVM_PUBLIC_VALUES_LEN);
+        // NativePvm uses the pinned, already-existing OpenVM SHA-2 extension for the dynamic
+        // M4 input commitment. FrontendTranslated continues to execute its software SHA path;
+        // both implementations use this same M4 VM configuration and public-values envelope.
+        app_config.app_vm_config.sha2 = Some(Default::default());
         return Sdk::new(app_config, AggregationSystemParams::default())
             .expect("valid M4 OpenVM SDK configuration");
     }
@@ -819,47 +823,95 @@ mod tests {
     }
 
     #[test]
-    fn phase0_direct_vm_exe_executes_through_existing_sdk() {
+    fn native_pvm_arithmetic_execute_matches_m4_public_statement() {
         let backend = OpenVmBackend;
-        let native = native_pvm::NativePvmLowerer::default()
-            .phase0_arithmetic_probe()
+        let source =
+            zk_jam_translation::workload_program(zk_jam_translation::M3Workload::Arithmetic);
+        let lowered = native_pvm::NativePvmLowerer::default()
+            .lower(&source, 7)
             .unwrap();
         let artifact = backend
             .program_from_vm_exe(
                 M2Benchmark::M4NativeArithmetic,
-                native.exe,
-                "NativePvm: direct OpenVM instruction injection",
+                lowered.exe,
+                "NativePvm: PvmProgramV1 -> OpenVM Instructions",
             )
             .unwrap();
         let execution = backend
             .execute(&artifact, M2Input::arithmetic(7, 9))
             .unwrap();
-        assert_eq!(execution.public_output.len(), M4_OPENVM_PUBLIC_VALUES_LEN);
+        let values = M4PublicValuesV1::decode_openvm(&execution.public_output).unwrap();
+        let input = zk_jam_translation::ExecutionInputV1::new(vec![7, 9]);
         assert_eq!(
-            u32::from_le_bytes(execution.public_output[..4].try_into().unwrap()),
-            16
+            values.program_commitment,
+            zk_jam_translation::program_commitment(&source)
         );
+        assert_eq!(
+            values.input_commitment,
+            zk_jam_translation::input_commitment(&input)
+        );
+        assert_eq!(
+            u32::from_le_bytes(values.output[..4].try_into().unwrap()),
+            0xA5A5_5A6A
+        );
+        assert!(values.output[4..].iter().all(|byte| *byte == 0));
     }
 
     #[test]
-    #[ignore = "Phase 0 proving gate; run explicitly with --ignored"]
-    fn phase0_direct_vm_exe_proves_and_verifies() {
+    fn native_pvm_all_six_m4_cases_match_reference_execute_only() {
         let backend = OpenVmBackend;
-        let native = native_pvm::NativePvmLowerer::default()
-            .phase0_arithmetic_probe()
-            .unwrap();
-        let artifact = backend
-            .program_from_vm_exe(
-                M2Benchmark::M4NativeArithmetic,
-                native.exe,
-                "NativePvm: direct OpenVM instruction injection",
-            )
-            .unwrap();
-        let input = M2Input::arithmetic(7, 9);
-        let proof = backend.prove(&artifact, input).unwrap();
-        proof
-            .verify(&input.context_hash(&M2Benchmark::M4NativeArithmetic))
-            .unwrap();
+        let cases = [
+            (zk_jam_translation::M3Workload::Arithmetic, 7, 7, 9),
+            (zk_jam_translation::M3Workload::Arithmetic, 7, 10, 20),
+            (zk_jam_translation::M3Workload::BranchTrue, 5, 21, 8),
+            (zk_jam_translation::M3Workload::BranchTrue, 5, 8, 21),
+            (zk_jam_translation::M3Workload::BranchTrue, 5, 8, 8),
+            (
+                zk_jam_translation::M3Workload::Memory16K,
+                2,
+                0x1234_5678,
+                16 * 1024,
+            ),
+        ];
+        for (workload, output_register, a, b) in cases {
+            let source = zk_jam_translation::workload_program(workload);
+            let lowered = native_pvm::NativePvmLowerer::default()
+                .lower(&source, output_register)
+                .unwrap();
+            let benchmark = match workload {
+                zk_jam_translation::M3Workload::Arithmetic => M2Benchmark::M4NativeArithmetic,
+                zk_jam_translation::M3Workload::BranchTrue => M2Benchmark::M4NativeBranch,
+                zk_jam_translation::M3Workload::Memory16K => M2Benchmark::M4NativeMemory16K,
+            };
+            let artifact = backend
+                .program_from_vm_exe(
+                    benchmark,
+                    lowered.exe,
+                    "NativePvm: PvmProgramV1 -> OpenVM Instructions",
+                )
+                .unwrap();
+            let execution = backend
+                .execute(&artifact, M2Input::arithmetic(a, b))
+                .unwrap();
+            let values = M4PublicValuesV1::decode_openvm(&execution.public_output).unwrap();
+            let input = zk_jam_translation::ExecutionInputV1::new(vec![a, b]);
+            let expected = zk_jam_translation::execute_reference(&source, &input, output_register)
+                .unwrap() as u32;
+            assert_eq!(
+                values.program_commitment,
+                zk_jam_translation::program_commitment(&source)
+            );
+            assert_eq!(
+                values.input_commitment,
+                zk_jam_translation::input_commitment(&input),
+                "input commitment mismatch for {workload:?} ({a}, {b})",
+            );
+            assert_eq!(
+                u32::from_le_bytes(values.output[..4].try_into().unwrap()),
+                expected
+            );
+            assert!(values.output[4..].iter().all(|byte| *byte == 0));
+        }
     }
 
     #[test]

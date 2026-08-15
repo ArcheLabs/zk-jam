@@ -421,16 +421,16 @@ pub struct M4PreflightReport {
     pub complete: bool,
 }
 
-struct M4BuiltProgram {
-    id: M4ProgramId,
-    program: zk_jam_refine_interface::PvmProgramV1,
-    translated: zk_jam_translation::TranslatedProgramV1,
-    artifact: zk_jam_openvm_backend::OpenVmProgramArtifact,
-    translation_ns: u128,
-    emission_ns: u128,
+pub(crate) struct M4BuiltProgram {
+    pub(crate) id: M4ProgramId,
+    pub(crate) program: zk_jam_refine_interface::PvmProgramV1,
+    pub(crate) translated: zk_jam_translation::TranslatedProgramV1,
+    pub(crate) artifact: zk_jam_openvm_backend::OpenVmProgramArtifact,
+    pub(crate) translation_ns: u128,
+    pub(crate) emission_ns: u128,
 }
 
-fn build_m4_program(backend: &OpenVmBackend, id: M4ProgramId) -> Result<M4BuiltProgram> {
+pub(crate) fn build_m4_program(backend: &OpenVmBackend, id: M4ProgramId) -> Result<M4BuiltProgram> {
     let program = workload_program(id.workload());
     let translation_started = Instant::now();
     let translated = translate(&program)?;
