@@ -60,3 +60,32 @@ body { background: #040a11; }
 .timeline-step .step-icon { align-self: center; justify-self: start; }
 .metric-row > span { align-items: center; }
 .metric-row > span svg { flex: 0 0 auto; }
+
+/* Layout and readability pass */
+.right-rail { top: 18px; z-index: 6; max-height: calc(100% - 36px); overflow-y: auto; scrollbar-width: thin; scrollbar-color: rgba(0,159,232,.45) transparent; }
+.map-legend { z-index: 8; }
+.timeline-wrap { z-index: 4; }
+.timeline-step .step-icon { grid-row: 1 / span 2; }
+.eyebrow { font-size: 9px; }
+.field-label { font-size: 12px; }
+.parameter strong { font-size: 11px; }
+.parameter p { font-size: 10px; }
+.reference-grid { font-size: 10px; }
+.reference-grid strong { font-size: 10px; }
+.source-line { font-size: 9px; }
+.button { font-size: 11px; }
+.map-caption { font-size: 9px; }
+.map-legend { font-size: 9px; }
+.card-subheading { font-size: 9px; }
+.metric-row > span { font-size: 9px; }
+.metric-row strong { font-size: 10px; }
+.metric-row .badge { font-size: 7px; }
+.pressure { font-size: 8px; }
+.pressure strong { font-size: 9px; }
+.status-time span, .progress-label { font-size: 8px; }
+.progress-label strong { font-size: 9px; }
+.status-grid span { font-size: 8px; }
+.status-grid b { font-size: 10px; }
+.lane-heading { font-size: 9px; }
+.timeline-step span { font-size: 9px; }
+.timeline-step small { font-size: 8px; }
