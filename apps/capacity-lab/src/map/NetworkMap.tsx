@@ -15,6 +15,7 @@ export function NetworkMap({ result, simTime }: { result: SimulationResult; simT
   useEffect(() => { fetch(`${import.meta.env.BASE_URL}world.geojson`).then((response) => response.json()).then(setWorld).catch(() => setWorld(null)); }, []);
   const publishedAt = result.events.find((event) => event.type === "BLOCK_PUBLISHED")?.time ?? 0;
   const published = simTime >= publishedAt;
+  const daReadyAt = result.events.find((event) => event.type === "DA_2_3_READY")?.time ?? result.metrics.reportReadySeconds;
   const logicalReadyAt = useMemo(() => new Map(result.events.filter((event) => event.type === "LOGICAL_READY" && event.slot !== undefined).map((event) => [event.slot!, event.time])), [result]);
   const groupedRepresentative = Math.min(180, Math.max(12, Math.round(result.metrics.groupedSlots / 4)));
   const ordinaryRepresentative = Math.min(180, Math.max(18, Math.round(result.metrics.ordinarySlots / 6)));
@@ -38,7 +39,7 @@ export function NetworkMap({ result, simTime }: { result: SimulationResult; simT
   const blockArcs = result.runtime.producer ? result.logicalSlots.filter((_, index) => index % 34 === 0).map((slot) => ({ source: [result.runtime.producer.longitude, result.runtime.producer.latitude] as [number, number], target: [slot.region.longitude, slot.region.latitude] as [number, number] })) : [];
   const trips = result.logicalSlots.filter((_, index) => index % 24 === 0).map((slot, index) => {
     const source = result.runtime.sources[index % result.runtime.sources.length];
-    return { path: [[source.longitude, source.latitude, 0], [slot.region.longitude, slot.region.latitude, result.metrics.workDaTwoThird]] as [number, number, number][], color: [80, 224, 255] };
+    return { path: [[source.longitude, source.latitude, 0], [slot.region.longitude, slot.region.latitude, daReadyAt]] as [number, number, number][], color: [80, 224, 255] };
   });
   const layers: Layer[] = [
     ...(world ? [new GeoJsonLayer({ id: "world", data: world, filled: true, stroked: true, getFillColor: [14, 27, 43, 210], getLineColor: [95, 125, 160, 45], lineWidthMinPixels: 0.35 })] : []),

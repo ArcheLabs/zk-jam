@@ -34,26 +34,29 @@ export function buildScenario(params: Parameters, seed = 42): SimulationResult {
   const groupBlock = groupedSlots ? groupBlockSimulation(nodes, load, BLOCK.mb, activeCores, seed) : null;
   const workNetwork = simulateWorkDaRound(shard, nodes, load, groupedSlots, REGIONS, rt);
   const blockNetwork = simulateBlockRound(BLOCK.mb, nodes, load, groupedSlots, REGIONS, rt);
-  const proofAvg = proofSeconds(eth);
+  const proofBarrierSeconds = proofSeconds(eth);
   const proofP99 = eth * ZK_REFERENCE.openVmEthBlockP99Seconds;
   const itemsPerPackage = Math.max(1, Math.min(PROTOCOL.maxWorkItemsPerPackage, Math.floor(150 / eth)));
   const refine = PROTOCOL.slotSeconds * (eth / 150);
   const workDaTwoThird = quantile(workNetwork.readyTimes, 2 / 3);
-  const workReport = refine + Math.max(proofAvg, workDaTwoThird) + ZK_REFERENCE.aggregateSeconds;
+  const reportReadySeconds = refine + Math.max(proofBarrierSeconds, workDaTwoThird) + ZK_REFERENCE.aggregateSeconds;
   const ordinaryVerify = workerQueueSeconds(activeCores, ORDINARY_VALIDATOR.verifyWorkers, 0.025);
   const groupVerify = groupBlock?.verifySeconds ?? 0;
-  const groupFinalCoordination = groupBlock?.coordinationSeconds ?? 0;
+  const groupIngressFanoutSeconds = groupedSlots ? blockNetwork.groupIngressFanoutSeconds : 0;
+  const groupFinalizationSeconds = groupedSlots ? blockNetwork.groupFinalizationSeconds : 0;
   const logicalSlots: LogicalSlotResult[] = Array.from({ length: PROTOCOL.logicalValidators }, (_, index) => {
     const region = REGIONS[index % REGIONS.length];
     const grouped = groupedSlot(index, groupedSlots);
-    const data = blockNetwork.readyTimes[index];
-    const verify = grouped ? groupVerify + (groupBlock?.controlTrafficSeconds ?? 0) : ordinaryVerify;
-    const finalCoordination = grouped ? groupFinalCoordination : 0;
-    const blockReady = Math.max(data, verify, 0.005) + finalCoordination + 0.01;
+    const data = blockNetwork.groupDataTimes[index];
+    const verify = grouped ? groupVerify : ordinaryVerify;
+    const blockReady = grouped
+      ? Math.max(data, verify) + groupIngressFanoutSeconds + groupFinalizationSeconds + 0.01
+      : Math.max(data, verify, 0.005) + 0.01;
     return { index, grouped, region, daReady: workNetwork.readyTimes[index], blockReady };
   });
   const readyTimes = logicalSlots.map((slot) => slot.blockReady);
-  const blockTwoThird = quantile(readyTimes, 2 / 3);
+  const blockToTwoThirdSeconds = quantile(readyTimes, 2 / 3);
+  const roundTimeSeconds = reportReadySeconds + blockToTwoThirdSeconds;
   const logicalReadyP50 = quantile(readyTimes, 0.50);
   const logicalReadyP90 = quantile(readyTimes, 0.90);
   const logicalReadyP99 = quantile(readyTimes, 0.99);
@@ -61,40 +64,46 @@ export function buildScenario(params: Parameters, seed = 42): SimulationResult {
   const ordinaryDaP50 = workNetwork.ordinaryReadyTimes.length ? quantile(workNetwork.ordinaryReadyTimes, 0.5) : null;
   const groupReadyP50 = groupedSlots ? quantile(logicalSlots.filter((slot) => slot.grouped).map((slot) => slot.blockReady), 0.5) : null;
   const ordinaryReadyP50 = ordinarySlots ? quantile(logicalSlots.filter((slot) => !slot.grouped).map((slot) => slot.blockReady), 0.5) : null;
-  const effectiveInterval = blockTwoThird;
   const physicalNodes = ordinarySlots + groupedSlots * nodes;
-  const groupInternal = groupDa ? groupInternalSeconds(shard, nodes, load, seed) : { replicationSeconds: 0, coordinationSeconds: 0, controlTrafficSeconds: 0, totalSeconds: 0 };
+  const groupInternal = groupDa ? groupInternalSeconds(shard, nodes, load, seed) : { replicationSeconds: 0, coordinationSeconds: 0, ingressFanoutSeconds: 0, finalizationSeconds: 0, controlTrafficSeconds: 0, totalSeconds: 0 };
   const groupPackagesPerNode = groupBlock?.packagesPerNode ?? 0;
-  const groupCriticalValues = { DATA: groupDa ? quantile(blockNetwork.groupedReadyTimes, 0.5) : 0, VERIFY: groupVerify, "INTERNAL NETWORK": groupInternal.coordinationSeconds + groupInternal.controlTrafficSeconds };
+  const groupCommunicationSeconds = groupedSlots ? blockNetwork.groupCommunicationSeconds : 0;
+  const groupCriticalValues = { DATA: groupedSlots ? quantile(blockNetwork.groupDataTimes.filter((_, index) => groupedSlot(index, groupedSlots)), 0.5) : 0, VERIFY: groupVerify, "INTERNAL NETWORK": groupCommunicationSeconds };
   const groupCriticalPath = (Object.entries(groupCriticalValues).sort(([, left], [, right]) => right - left)[0]?.[0] ?? "DATA") as SimulationResult["metrics"]["groupCriticalPath"];
   const sourceUtilization = Math.max(workNetwork.sourceUtilization, blockNetwork.sourceUtilization);
   const backboneUtilization = Math.max(workNetwork.backboneUtilization, blockNetwork.backboneUtilization);
   const homeWanUtilization = Math.max(workNetwork.homeWanUtilization, blockNetwork.homeWanUtilization);
   const totalWorkers = ordinarySlots * ORDINARY_VALIDATOR.verifyWorkers + groupedSlots * nodes * HOME_NODE.verifyWorkers;
   const verifyDemandSeconds = PROTOCOL.logicalValidators * activeCores * 0.025;
-  const verifyUtilization = clamp(verifyDemandSeconds / (Math.max(1, totalWorkers) * Math.max(0.001, blockTwoThird)), 0, 1);
-  const bottleneckScores = { DATA: Math.max(sourceUtilization, backboneUtilization, homeWanUtilization), VERIFY: verifyUtilization, "INTERNAL NETWORK": groupCriticalValues["INTERNAL NETWORK"] / Math.max(0.001, groupReadyP50 ?? blockTwoThird), SOURCE: sourceUtilization, BACKBONE: backboneUtilization, SLOT: 0 };
-  const dominantBottleneck = (Object.entries(bottleneckScores).sort(([, left], [, right]) => right - left)[0]?.[0] ?? "DATA") as SimulationResult["metrics"]["dominantBottleneck"];
+  const verifyUtilization = clamp(verifyDemandSeconds / (Math.max(1, totalWorkers) * Math.max(0.001, blockToTwoThirdSeconds)), 0, 1);
+  const bottleneckValues = {
+    PROOF: proofBarrierSeconds,
+    WORK_DA: workDaTwoThird,
+    BLOCK_NETWORK: blockToTwoThirdSeconds,
+    VERIFY: Math.max(ordinaryVerify, groupVerify),
+    GROUP_COMMUNICATION: groupCommunicationSeconds,
+  };
+  const dominantBottleneck = (Object.entries(bottleneckValues).sort(([, left], [, right]) => right - left)[0]?.[0] ?? "BLOCK_NETWORK") as SimulationResult["metrics"]["dominantBottleneck"];
   const requiredClusters = activeCores * Math.min(150, eth * itemsPerPackage) * ZK_REFERENCE.openVmEthBlockAvgSeconds / PROTOCOL.slotSeconds;
-  const blockDataReady = quantile(blockNetwork.readyTimes, 0.5);
-  const blockVerifyReady = Math.max(ordinaryVerify, groupVerify + (groupBlock?.controlTrafficSeconds ?? 0));
+  const blockDataReady = quantile(blockNetwork.groupDataTimes, 0.5);
+  const blockVerifyReady = Math.max(ordinaryVerify, groupVerify) + groupIngressFanoutSeconds;
   const events: SimulationEvent[] = [
     { time: 0, type: "WORK_START" }, { time: refine, type: "REFINE_DONE" },
     { time: refine, type: "PROOF_START" }, { time: refine, type: "DA_START" },
-    { time: refine + proofAvg, type: "PROOF_DONE" }, { time: refine + workDaTwoThird, type: "DA_2_3_READY" },
-    { time: workReport, type: "REPORT_READY" }, { time: 0, type: "BLOCK_PUBLISHED", region: rt.producer },
-    { time: 0.01, type: "BLOCK_HEADER_RECEIVED", region: rt.producer },
-    { time: blockDataReady, type: "BLOCK_DATA_READY", region: rt.producer },
-    { time: blockVerifyReady, type: "BLOCK_VERIFY_READY", region: rt.producer },
-    ...logicalSlots.map((slot) => ({ time: slot.blockReady, type: "LOGICAL_READY" as const, slot: slot.index, region: slot.region })),
-    { time: blockTwoThird, type: "QUORUM_2_3" },
+    { time: refine + proofBarrierSeconds, type: "PROOF_DONE" }, { time: refine + workDaTwoThird, type: "DA_2_3_READY" },
+    { time: reportReadySeconds, type: "REPORT_READY" }, { time: reportReadySeconds, type: "BLOCK_PUBLISHED", region: rt.producer },
+    { time: reportReadySeconds + 0.01, type: "BLOCK_HEADER_RECEIVED", region: rt.producer },
+    { time: reportReadySeconds + blockDataReady, type: "BLOCK_DATA_READY", region: rt.producer },
+    { time: reportReadySeconds + blockVerifyReady, type: "BLOCK_VERIFY_READY", region: rt.producer },
+    ...logicalSlots.map((slot) => ({ time: reportReadySeconds + slot.blockReady, type: "LOGICAL_READY" as const, slot: slot.index, region: slot.region })),
+    { time: roundTimeSeconds, type: "QUORUM_2_3" },
   ].sort((a, b) => a.time - b.time) as SimulationEvent[];
   return {
     params: { groupShare, nodesPerGroup: nodes, ethBlocksPerItem: eth, networkLoad: load },
     runtime: rt,
     metrics: {
       physicalNodes, groupedSlots, ordinarySlots, activeCores, gasEquivalent: gasFromEthBlocks(eth), itemsPerPackage,
-      proofAvg, proofP99, workDaTwoThird, workReport, blockTwoThird, effectiveInterval,
+      proofAvg: proofBarrierSeconds, proofP99, workDaTwoThird, proofBarrierSeconds, reportReadySeconds, blockToTwoThirdSeconds, roundTimeSeconds,
       logicalReadyP50, logicalReadyP90, logicalReadyP99, groupDaP50, ordinaryDaP50, groupReadyP50, ordinaryReadyP50,
       smallNodeDaMbps: groupDa?.daMbpsPerNode ?? 0,
       daStoredPerNodeMb: groupDa ? (shard * GROUP_NETWORK.replicationFactor) / Math.max(1, groupDa.activeDataNodes) : 0,
@@ -104,8 +113,13 @@ export function buildScenario(params: Parameters, seed = 42): SimulationResult {
       groupCoordinationSeconds: groupInternal.coordinationSeconds,
       groupControlTrafficSeconds: groupInternal.controlTrafficSeconds,
       groupVerifySeconds: groupVerify,
+      groupIngressFanoutSeconds, groupFinalizationSeconds, groupCommunicationSeconds,
+      groupAdditionalTrafficMb: blockNetwork.groupAdditionalTrafficMb,
+      physicalProtocolEndpoints: blockNetwork.physicalProtocolEndpoints,
       groupCriticalPath, requiredClusters, sourceUtilization, backboneUtilization, homeWanUtilization, verifyUtilization,
-      dominantBottleneck, pressure: proofAvg > effectiveInterval ? "PROVER-BOUND" : "NETWORK / VERIFY",
+      sourceDemandMb: Math.max(workNetwork.sourceDemandMb, blockNetwork.sourceDemandMb),
+      backboneDemandMb: Math.max(workNetwork.backboneDemandMb, blockNetwork.backboneDemandMb),
+      dominantBottleneck,
     }, events, logicalSlots,
   };
 }

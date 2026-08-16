@@ -11,7 +11,7 @@ export type Region = { name: string; longitude: number; latitude: number };
 export type Runtime = { seed: number; producer: Region; provers: Region[]; sources: Region[] };
 export type Metric = { value: string; source: SourceTag };
 export type LogicalSlotResult = { index: number; grouped: boolean; region: Region; daReady: number; blockReady: number };
-export type Bottleneck = "DATA" | "VERIFY" | "INTERNAL NETWORK" | "SOURCE" | "BACKBONE" | "SLOT";
+export type Bottleneck = "PROOF" | "WORK_DA" | "BLOCK_NETWORK" | "VERIFY" | "GROUP_COMMUNICATION";
 export type SimulationEvent = {
   time: number;
   type: "WORK_START" | "REFINE_DONE" | "PROOF_START" | "DA_START" | "PROOF_DONE" | "DA_2_3_READY" | "REPORT_READY" | "BLOCK_PUBLISHED" | "BLOCK_HEADER_RECEIVED" | "BLOCK_DATA_READY" | "BLOCK_VERIFY_READY" | "LOGICAL_READY" | "QUORUM_2_3";
@@ -29,9 +29,10 @@ export type SimulationMetrics = {
   proofAvg: number;
   proofP99: number;
   workDaTwoThird: number;
-  workReport: number;
-  blockTwoThird: number;
-  effectiveInterval: number;
+  proofBarrierSeconds: number;
+  reportReadySeconds: number;
+  blockToTwoThirdSeconds: number;
+  roundTimeSeconds: number;
   logicalReadyP50: number;
   logicalReadyP90: number;
   logicalReadyP99: number;
@@ -47,14 +48,20 @@ export type SimulationMetrics = {
   groupCoordinationSeconds: number;
   groupControlTrafficSeconds: number;
   groupVerifySeconds: number;
+  groupIngressFanoutSeconds: number;
+  groupFinalizationSeconds: number;
+  groupCommunicationSeconds: number;
+  groupAdditionalTrafficMb: number;
+  physicalProtocolEndpoints: number;
   groupCriticalPath: "DATA" | "VERIFY" | "INTERNAL NETWORK";
   requiredClusters: number;
   sourceUtilization: number;
   backboneUtilization: number;
   homeWanUtilization: number;
+  sourceDemandMb: number;
+  backboneDemandMb: number;
   verifyUtilization: number;
   dominantBottleneck: Bottleneck;
-  pressure: "PROVER-BOUND" | "NETWORK / VERIFY";
 };
 
 export type SimulationResult = {

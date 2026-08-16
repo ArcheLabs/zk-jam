@@ -11,9 +11,9 @@ export function Timeline({ language, result, simTime }: { language: Language; re
   const m = result.metrics;
   const timeAt = (type: SimulationEvent["type"], fallback: number) => result.events.find((event) => event.type === type)?.time ?? fallback;
   const publishedAt = timeAt("BLOCK_PUBLISHED", 0);
-  const quorumAt = timeAt("QUORUM_2_3", m.effectiveInterval);
+  const quorumAt = timeAt("QUORUM_2_3", m.roundTimeSeconds);
   const ready = result.events.filter((event) => event.type === "LOGICAL_READY" && event.time <= simTime).length;
-  const reportAt = timeAt("REPORT_READY", m.workReport);
+  const reportAt = timeAt("REPORT_READY", m.reportReadySeconds);
   const work: Step[] = [
     { label: t.refine, icon: Gauge, at: timeAt("WORK_START", 0) },
     { label: t.prove, icon: ShieldCheck, at: timeAt("PROOF_START", 0) },

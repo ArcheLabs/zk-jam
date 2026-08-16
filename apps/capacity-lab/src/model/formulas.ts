@@ -26,19 +26,43 @@ export const globalNetworkRttSeconds = (a: Region, b: Region) => {
 };
 export const coordinationRounds = (nodes: number) => nodes <= 1 ? 0 : Math.ceil(Math.log(Math.max(1, nodes)) / Math.log(GROUP_NETWORK.overlayFanout));
 export const groupCoordinationSeconds = (nodes: number, seed = 42) => coordinationRounds(nodes) * groupRttSeconds(seed);
+export const groupIngressFanoutSeconds = (nodes: number, seed = 42) => groupCoordinationSeconds(nodes, seed);
+export const groupFinalizationSeconds = (nodes: number, seed = 42) => groupCoordinationSeconds(nodes, seed);
+
+export const groupTrafficComponents = (payloadMb: number, nodes: number) => {
+  const normalizedNodes = Math.max(1, Math.round(nodes));
+  const rounds = coordinationRounds(normalizedNodes);
+  const replicationTrafficMb = Math.max(0, payloadMb) * (GROUP_NETWORK.replicationFactor - 1);
+  const internalControlMb = (normalizedNodes * rounds * GROUP_NETWORK.controlBytesPerNode) / 1_000_000;
+  const physicalMemberTrafficMb = (Math.max(0, normalizedNodes - 1) * GROUP_NETWORK.controlBytesPerNode) / 1_000_000;
+  return {
+    replicationTrafficMb,
+    internalControlMb,
+    physicalMemberTrafficMb,
+    groupAdditionalTrafficMb: replicationTrafficMb + internalControlMb + physicalMemberTrafficMb,
+  };
+};
 
 export const groupInternalSeconds = (payloadMb: number, nodes: number, load: number, seed = 42) => {
   const activeNodes = activeDataNodes(nodes, payloadMb);
-  const totalReplicationMb = payloadMb * (GROUP_NETWORK.replicationFactor - 1);
+  const { replicationTrafficMb, internalControlMb } = groupTrafficComponents(payloadMb, nodes);
+  const totalReplicationMb = replicationTrafficMb;
   const replicationUploadPerNodeMb = totalReplicationMb / activeNodes;
   const uploadSeconds = replicationUploadPerNodeMb / Math.max(0.001, effectiveHomeUpMbps(load) / 8);
   const downloadSeconds = replicationUploadPerNodeMb / Math.max(0.001, effectiveHomeDownMbps(load) / 8);
   const replicationSeconds = Math.max(uploadSeconds, downloadSeconds);
-  const rounds = coordinationRounds(nodes);
-  const controlMb = (Math.max(1, Math.round(nodes)) * rounds * GROUP_NETWORK.controlBytesPerNode) / 1_000_000;
-  const controlTrafficSeconds = rounds === 0 ? 0 : Math.max(controlMb / Math.max(0.001, effectiveHomeUpMbps(load) / 8), controlMb / Math.max(0.001, effectiveHomeDownMbps(load) / 8));
-  const coordinationSeconds = groupCoordinationSeconds(nodes, seed);
-  return { replicationSeconds, coordinationSeconds, controlTrafficSeconds, totalSeconds: replicationSeconds + coordinationSeconds + controlTrafficSeconds };
+  const controlTrafficSeconds = internalControlMb === 0 ? 0 : Math.max(internalControlMb / Math.max(0.001, effectiveHomeUpMbps(load) / 8), internalControlMb / Math.max(0.001, effectiveHomeDownMbps(load) / 8));
+  const ingressFanoutSeconds = groupIngressFanoutSeconds(nodes, seed);
+  const finalizationSeconds = groupFinalizationSeconds(nodes, seed);
+  const coordinationSeconds = ingressFanoutSeconds + finalizationSeconds;
+  return {
+    replicationSeconds,
+    coordinationSeconds,
+    ingressFanoutSeconds,
+    finalizationSeconds,
+    controlTrafficSeconds,
+    totalSeconds: replicationSeconds + controlTrafficSeconds + ingressFanoutSeconds + finalizationSeconds,
+  };
 };
 
 export const workerQueueSeconds = (taskCount: number, workers: number, taskSeconds: number) =>
