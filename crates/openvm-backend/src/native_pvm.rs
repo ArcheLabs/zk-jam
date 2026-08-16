@@ -310,8 +310,9 @@ impl NativePvmLowerer {
                 | GenericInstruction::Jump
                 | GenericInstruction::Fallthrough
                 | GenericInstruction::Halt
-                | GenericInstruction::Trap(_) => {
-                    return Err(NativePvmError::UnsupportedOpcode(opcode::ADD_64))
+                | GenericInstruction::Trap(_)
+                | GenericInstruction::HostCall { .. } => {
+                    return Err(NativePvmError::UnsupportedOpcode(opcode::ECALLI))
                 }
             };
         }
@@ -538,8 +539,9 @@ impl NativePvmLowerer {
             | GenericInstruction::Jump
             | GenericInstruction::Fallthrough
             | GenericInstruction::Halt
-            | GenericInstruction::Trap(_) => {
-                return Err(NativePvmError::UnsupportedOpcode(opcode::ADD_64))
+            | GenericInstruction::Trap(_)
+            | GenericInstruction::HostCall { .. } => {
+                return Err(NativePvmError::UnsupportedOpcode(opcode::ECALLI))
             }
         }
         Ok(())

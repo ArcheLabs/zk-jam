@@ -47,6 +47,7 @@ pub enum M2Benchmark {
     M4NativeArithmetic,
     M4NativeBranch,
     M4NativeMemory16K,
+    M5ZkRefine,
 }
 
 impl M2Benchmark {
@@ -64,6 +65,7 @@ impl M2Benchmark {
             Self::M4NativeArithmetic => "m4-native-arithmetic",
             Self::M4NativeBranch => "m4-native-branch",
             Self::M4NativeMemory16K => "m4-native-memory-16384",
+            Self::M5ZkRefine => "m5-zkrefine",
         }
     }
 
@@ -94,6 +96,7 @@ impl M2Benchmark {
             Self::M4NativeArithmetic => "m4-native-arithmetic-v1",
             Self::M4NativeBranch => "m4-native-branch-v1",
             Self::M4NativeMemory16K => "m4-native-memory-16384-v1",
+            Self::M5ZkRefine => "m5-zkrefine-v1",
         }
     }
 }
@@ -521,6 +524,26 @@ impl OpenVmBackend {
         })
     }
 
+    /// Execute a caller-owned serialized witness stream. M5 uses this to keep the complete
+    /// canonical RefineCase private to the guest input rather than reducing it to M2 words.
+    pub fn execute_stdin(
+        &self,
+        program: &OpenVmProgramArtifact,
+        stdin: StdIn,
+    ) -> Result<OpenVmExecutionResult> {
+        let sdk = sdk_for_benchmark(&program.benchmark);
+        let started = Instant::now();
+        let public_output = sdk
+            .execute(ExecutableFormat::SharedVmExe(program.exe.clone()), stdin)
+            .map_err(|error| eyre!("execute {}: {error}", program.benchmark.name()))?;
+        Ok(OpenVmExecutionResult {
+            benchmark: program.benchmark.clone(),
+            public_output,
+            elapsed_ns: started.elapsed().as_nanos(),
+            executable_bytes: program.serialized_executable_size_bytes,
+        })
+    }
+
     pub fn execute_prepared(
         &self,
         prepared: &OpenVmPreparedProgram,
@@ -640,6 +663,48 @@ impl OpenVmBackend {
         })
     }
 
+    /// Prove a caller-owned serialized witness stream. The context hash is supplied by the
+    /// application statement layer and is checked again by `OpenVmProofArtifact::verify`.
+    pub fn prove_stdin(
+        &self,
+        program: &OpenVmProgramArtifact,
+        stdin: StdIn,
+        context_hash: String,
+    ) -> Result<OpenVmProofArtifact> {
+        let prepared = self.prepare(program.clone_for_proving())?;
+        let prove_started = Instant::now();
+        let (proof, baseline) = prepared
+            .sdk
+            .prove(
+                ExecutableFormat::SharedVmExe(prepared.program.exe.clone()),
+                stdin,
+                &[],
+            )
+            .map_err(|error| eyre!("prove {}: {error}", prepared.program.benchmark.name()))?;
+        let public_output = proof
+            .user_pvs_proof
+            .public_values
+            .iter()
+            .map(|value| value.as_canonical_u32() as u8)
+            .collect::<Vec<_>>();
+        let versioned = VersionedVmStarkProof::new(proof)
+            .map_err(|error| eyre!("encode OpenVM proof: {error}"))?;
+        Ok(OpenVmProofArtifact {
+            benchmark: prepared.program.benchmark.clone(),
+            openvm_version: OPENVM_VERSION.to_string(),
+            openvm_revision: OPENVM_REVISION.to_string(),
+            backend: OPENVM_BACKEND.to_string(),
+            security_bits: 100,
+            keygen_time_ns: prepared.keygen_time_ns,
+            prove_time_ns: prove_started.elapsed().as_nanos(),
+            context_hash,
+            public_output,
+            proof: versioned,
+            baseline: baseline.into(),
+            agg_vk: prepared.agg_vk,
+        })
+    }
+
     pub fn verify(&self, artifact: &OpenVmProofArtifact, input: M2Input) -> Result<()> {
         artifact.verify(&input.context_hash(&artifact.benchmark))
     }
@@ -713,6 +778,7 @@ fn sdk_for_benchmark(benchmark: &M2Benchmark) -> OpenVmSdk {
             | M2Benchmark::M4NativeArithmetic
             | M2Benchmark::M4NativeBranch
             | M2Benchmark::M4NativeMemory16K
+            | M2Benchmark::M5ZkRefine
     ) {
         let app_params = app_params_with_100_bits_security(MAX_APP_LOG_STACKED_HEIGHT);
         let mut app_config = AppConfig::riscv32(app_params);

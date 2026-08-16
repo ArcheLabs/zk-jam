@@ -4677,8 +4677,10 @@ dependencies = [
  "blake2b_simd",
  "eyre",
  "jsonschema",
+ "openvm-sdk",
  "serde",
  "serde_json",
+ "tiny-keccak",
  "zk-jam-openvm-backend",
  "zk-jam-refine-interface",
  "zk-jam-translation",
@@ -4731,6 +4733,7 @@ dependencies = [
  "blake2b_simd",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 2.0.20",
 ]
 

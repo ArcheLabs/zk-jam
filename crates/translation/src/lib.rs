@@ -181,6 +181,9 @@ fn emit_guest_instruction(
             };
             format!("                branch = {condition};\n")
         }
+        GenericInstruction::HostCall { .. } => {
+            return Err(TranslationError::UnsupportedOpcode(opcode::ECALLI))
+        }
         GenericInstruction::Jump | GenericInstruction::Fallthrough | GenericInstruction::Halt => String::new(),
         GenericInstruction::Trap(_) => return Err(TranslationError::UnsupportedTerminator),
     };
@@ -194,6 +197,7 @@ pub const M3_MEMORY_BYTES: usize = 16 * 1024;
 /// Stable opcode names used by Jambda's `jp-vm-primitives`.
 pub mod opcode {
     pub const TRAP: u8 = 0;
+    pub const ECALLI: u8 = 10;
     pub const LOAD_IMM_64: u8 = 20;
     pub const STORE_IMM_U32: u8 = 32;
     pub const JUMP: u8 = 40;
@@ -328,6 +332,9 @@ pub enum GenericInstruction {
         left: u8,
         right: u8,
     },
+    HostCall {
+        id: u32,
+    },
     Jump,
     Fallthrough,
     Halt,
@@ -345,6 +352,7 @@ impl GenericInstruction {
             Self::Add64 { .. } | Self::Sub64 { .. } | Self::Mul64 { .. } => 4,
             Self::Load32 { .. } | Self::Store32 { .. } | Self::StoreImm32 { .. } => 2,
             Self::Branch { .. } => 2,
+            Self::HostCall { .. } => 1,
             Self::Jump | Self::Fallthrough | Self::Halt | Self::Trap(_) => 1,
         }
     }
@@ -480,6 +488,10 @@ fn encode_instruction(bytes: &mut Vec<u8>, instruction: &GenericInstruction) {
             left,
             right,
         } => bytes.extend_from_slice(&[12, *opcode, *left, *right]),
+        GenericInstruction::HostCall { id } => {
+            bytes.push(17);
+            bytes.extend_from_slice(&id.to_le_bytes());
+        }
         GenericInstruction::Jump => bytes.push(13),
         GenericInstruction::Fallthrough => bytes.push(14),
         GenericInstruction::Halt => bytes.push(15),
@@ -660,6 +672,7 @@ fn emit_instruction(
             left: regs.ra,
             right: regs.rb,
         }),
+        opcode::ECALLI => output.push(GenericInstruction::HostCall { id: imm_u32()? }),
         opcode::LOAD_U32 => output.push(GenericInstruction::Load32 {
             destination: regs.ra,
             address: imm_u32()?,
@@ -1389,8 +1402,13 @@ mod tests {
         let mut program = arithmetic_program();
         program.blocks[0].instructions[0].opcode = 10;
         program.blocks[0].instructions[0].immediate = 1u32.to_le_bytes().to_vec();
+        let translated = translate(&program).expect("ECALLI is valid M5 IR");
         assert!(matches!(
-            translate(&program),
+            translated.blocks[0].instructions[0],
+            GenericInstruction::HostCall { id: 1 }
+        ));
+        assert!(matches!(
+            emit_openvm_guest(&translated, 7),
             Err(TranslationError::UnsupportedOpcode(10))
         ));
 

@@ -113,6 +113,9 @@ fn instruction_cost(instruction: &GenericInstruction) -> Result<u64, PvmGasError
         GenericInstruction::Fallthrough => 2,
         GenericInstruction::Halt => 2,
         GenericInstruction::Trap(_) => 2,
+        GenericInstruction::HostCall { .. } => {
+            return Err(PvmGasError::UnsupportedOpcode(opcode::ECALLI))
+        }
     })
 }
 
@@ -166,6 +169,7 @@ fn registers(instruction: &GenericInstruction) -> (Vec<u8>, Vec<u8>) {
         | GenericInstruction::Fallthrough
         | GenericInstruction::Halt
         | GenericInstruction::Trap(_) => (Vec::new(), Vec::new()),
+        GenericInstruction::HostCall { .. } => (Vec::new(), Vec::new()),
     }
 }
 

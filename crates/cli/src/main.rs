@@ -7,11 +7,11 @@ use zk_jam_benchmark::{
     aggregate_m4_1_publication, aggregate_m4_publication, aggregate_m4_reports,
     aggregate_pvm_openvm, report_run, run_m2, run_m3, run_m3_worker, run_m4_1_preflight,
     run_m4_1_publication_workload, run_m4_preflight, run_m4_proof_program, run_m4_publication,
-    run_m4_publication_worker, run_m4_publication_workload, run_pvm_openvm_preflight,
-    run_pvm_openvm_worker, run_pvm_openvm_workload_filtered, run_worker, validate_m3_report,
-    validate_m4_preflight_report, validate_m4_proof_partial_report, validate_m4_publication_report,
-    validate_m4_report, validate_pvm_openvm_report, verify_jambda_provenance, BenchmarkOptions,
-    M4ProgramId,
+    run_m4_publication_worker, run_m4_publication_workload, run_m5_zkrefine,
+    run_pvm_openvm_preflight, run_pvm_openvm_worker, run_pvm_openvm_workload_filtered, run_worker,
+    validate_m3_report, validate_m4_preflight_report, validate_m4_proof_partial_report,
+    validate_m4_publication_report, validate_m4_report, validate_pvm_openvm_report,
+    verify_jambda_provenance, BenchmarkOptions, M4ProgramId,
 };
 use zk_jam_cost_model as cost_model;
 use zk_jam_openvm_backend::{M2Benchmark, M2Input, OpenVmBackend};
@@ -58,6 +58,45 @@ fn usage() {
     eprintln!("       zk-jam cost-model ci --output benchmarks/results");
     eprintln!("       zk-jam cost-model gpu-calibrate [--workload NAME] [--samples N] [--warmup N] --output gpu-calibration.json");
     eprintln!("       zk-jam cost-model aggregate --cost-model cost-model-combined.json --gpu-calibration gpu-calibration.json --output cost-model-final.json");
+    eprintln!("       zk-jam m5-zkrefine --jambda-repo <checkout> --adapter <pinned-adapter> [--output benchmarks/results/m5-zkrefine]");
+}
+
+fn m5_zkrefine_command(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let mut output = PathBuf::from("benchmarks/results/m5-zkrefine");
+    let mut jambda_repo = None;
+    let mut adapter = None;
+    let mut index = 1;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--output" => {
+                output = PathBuf::from(args.get(index + 1).ok_or("missing --output value")?);
+                index += 2;
+            }
+            "--jambda-repo" => {
+                jambda_repo = Some(PathBuf::from(
+                    args.get(index + 1).ok_or("missing --jambda-repo value")?,
+                ));
+                index += 2;
+            }
+            "--adapter" => {
+                adapter = Some(PathBuf::from(
+                    args.get(index + 1).ok_or("missing --adapter value")?,
+                ));
+                index += 2;
+            }
+            other => return Err(format!("unknown M5 option: {other}").into()),
+        }
+    }
+    let report = run_m5_zkrefine(
+        &output,
+        &jambda_repo.ok_or("M5 requires --jambda-repo")?,
+        &adapter.ok_or("M5 requires --adapter")?,
+    )?;
+    println!("M5 complete: {}", report.complete);
+    if !report.complete {
+        return Err("M5 ZkRefine acceptance failed".into());
+    }
+    Ok(())
 }
 
 fn cost_model_command(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
@@ -1050,6 +1089,13 @@ fn main() -> ExitCode {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
                 eprintln!("zk-jam cost-model: {error}");
+                ExitCode::FAILURE
+            }
+        },
+        (Some("m5-zkrefine"), _) => match m5_zkrefine_command(&argv) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("zk-jam M5: {error}");
                 ExitCode::FAILURE
             }
         },

@@ -1,0 +1,14 @@
+[package]
+name = "zk-jam-openvm-m5-zkrefine-guest"
+version = "2.0.1"
+edition = "2021"
+
+[workspace]
+
+[dependencies]
+openvm = { version = "2.0.1", git = "https://github.com/openvm-org/openvm.git", rev = "b820b25baab6c5d9b055f64e0286b6b1058e707c", features = ["std"] }
+sha2 = "0.10"
+
+[[bin]]
+name = "m5-zkrefine-v1"
+path = "src/main.rs"

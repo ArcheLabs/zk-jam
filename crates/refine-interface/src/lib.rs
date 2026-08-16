@@ -19,6 +19,10 @@ pub use codec::{CanonicalCodec, CodecError};
 pub use commitment::{
     input_commitments, statement_for, RefineInputCommitmentsV0, ZkRefineStatementV0,
 };
+pub use m5::{
+    m5_exports_canonical, m5_exports_commitment, m5_hash, m5_profile_id, m5_result_commitment,
+    M5ExportsV1, M5ProfileStatementV1, M5_CASE_DOMAIN,
+};
 pub use program::{
     PvmBlockV1, PvmInstructionV1, PvmProgramV1, PvmTerminatorV1, RegisterOperandsV1,
     PVM_PROGRAM_FORMAT_V1,
@@ -29,6 +33,8 @@ pub use state_witness::{HistoricalLookupWitnessV1, RefineStateWitnessV1, StateWi
 pub const REFINE_CASE_FORMAT_V1: u16 = 1;
 pub const JAM_SEMANTICS_VERSION_0_7_2: u16 = 0x0702;
 pub const PVM_REGISTER_COUNT: usize = 13;
+
+mod m5;
 pub const SEGMENT_SIZE: usize = 4_104;
 
 /// A host call or execution feature outside Smoke-v0.
