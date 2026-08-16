@@ -1,4 +1,5 @@
-import { BLOCK, ORDINARY_VALIDATOR, PROTOCOL, SMALL_VALIDATOR, ZK_REFERENCE } from "./constants";
+import { BLOCK, GROUP_NETWORK, HOME_NODE, ORDINARY_VALIDATOR, PROTOCOL, ZK_REFERENCE } from "./constants";
+import type { Region } from "./types";
 
 export const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 export const quantile = (values: number[], p: number) => {
@@ -12,27 +13,60 @@ export const formatGas = (gas: number) => gas >= 1e9 ? `${(gas / 1e9).toFixed(2)
 export const proofSeconds = (ethBlocks: number) => ethBlocks * ZK_REFERENCE.openVmEthBlockAvgSeconds;
 export const p99ProofSeconds = (ethBlocks: number) => ethBlocks * ZK_REFERENCE.openVmEthBlockP99Seconds;
 
-export const sharedGroupIngressMbps = (nodes: number, load: number) => {
-  const independent = nodes * SMALL_VALIDATOR.wanDownMbps * 0.85;
-  const contention = 0.95 - 0.31 * load;
-  return Math.min(independent, 2_000) * Math.max(0.48, contention);
+export const networkLoadFactor = (load: number) => clamp(1 - 0.45 * clamp(load, 0, 1), 0.45, 1);
+export const effectiveHomeDownMbps = (load: number) => HOME_NODE.wanDownMbps * HOME_NODE.networkEfficiency * networkLoadFactor(load);
+export const effectiveHomeUpMbps = (load: number) => HOME_NODE.wanUpMbps * HOME_NODE.networkEfficiency * networkLoadFactor(load);
+
+export const activeDataNodes = (nodes: number, totalDaMb: number) => Math.min(Math.max(1, Math.round(nodes)), Math.max(1, Math.ceil(totalDaMb / GROUP_NETWORK.minDaShardMb)));
+export const daShardPerNodeMb = (totalDaMb: number, nodes: number) => totalDaMb / activeDataNodes(nodes, totalDaMb);
+export const groupRttSeconds = (seed = 42) => GROUP_NETWORK.minRttSeconds + (((seed * 1664525 + 1013904223) >>> 0) / 4_294_967_296) * (GROUP_NETWORK.maxRttSeconds - GROUP_NETWORK.minRttSeconds);
+export const globalNetworkRttSeconds = (a: Region, b: Region) => {
+  const normalizedDistance = Math.hypot((a.longitude - b.longitude) / 360, (a.latitude - b.latitude) / 180);
+  return clamp((20 + normalizedDistance * 205) / 1000, 0.020, 0.250);
+};
+export const coordinationRounds = (nodes: number) => nodes <= 1 ? 0 : Math.ceil(Math.log(Math.max(1, nodes)) / Math.log(GROUP_NETWORK.overlayFanout));
+export const groupCoordinationSeconds = (nodes: number, seed = 42) => coordinationRounds(nodes) * groupRttSeconds(seed);
+export const groupIngressFanoutSeconds = (nodes: number, seed = 42) => groupCoordinationSeconds(nodes, seed);
+export const groupFinalizationSeconds = (nodes: number, seed = 42) => groupCoordinationSeconds(nodes, seed);
+
+export const groupTrafficComponents = (payloadMb: number, nodes: number) => {
+  const normalizedNodes = Math.max(1, Math.round(nodes));
+  const rounds = coordinationRounds(normalizedNodes);
+  const replicationTrafficMb = Math.max(0, payloadMb) * (GROUP_NETWORK.replicationFactor - 1);
+  const internalControlMb = (normalizedNodes * rounds * GROUP_NETWORK.controlBytesPerNode) / 1_000_000;
+  const physicalMemberTrafficMb = (Math.max(0, normalizedNodes - 1) * GROUP_NETWORK.controlBytesPerNode) / 1_000_000;
+  return {
+    replicationTrafficMb,
+    internalControlMb,
+    physicalMemberTrafficMb,
+    groupAdditionalTrafficMb: replicationTrafficMb + internalControlMb + physicalMemberTrafficMb,
+  };
 };
 
-export const localReplicationSeconds = (payloadMb: number, nodes: number, replication = SMALL_VALIDATOR.replication) => {
-  const copies = Math.min(replication, Math.max(1, nodes)) - 1;
-  if (copies <= 0 || payloadMb <= 0) return 0;
-  const totalMb = copies * payloadMb;
-  const perNodeMb = totalMb / Math.max(1, nodes);
-  const portMbPerSecond = (SMALL_VALIDATOR.lanPortMbps / 8) * 0.8;
-  const fabricMbPerSecond = (SMALL_VALIDATOR.groupFabricMbps / 8) * 0.8;
-  const portBound = perNodeMb / portMbPerSecond;
-  const fabricBound = totalMb / fabricMbPerSecond;
-  const coordination = (SMALL_VALIDATOR.localRttMs / 1000) * Math.ceil(Math.log2(Math.max(1, nodes)));
-  return Math.max(portBound, fabricBound) + coordination;
+export const groupInternalSeconds = (payloadMb: number, nodes: number, load: number, seed = 42) => {
+  const activeNodes = activeDataNodes(nodes, payloadMb);
+  const { replicationTrafficMb, internalControlMb } = groupTrafficComponents(payloadMb, nodes);
+  const totalReplicationMb = replicationTrafficMb;
+  const replicationUploadPerNodeMb = totalReplicationMb / activeNodes;
+  const uploadSeconds = replicationUploadPerNodeMb / Math.max(0.001, effectiveHomeUpMbps(load) / 8);
+  const downloadSeconds = replicationUploadPerNodeMb / Math.max(0.001, effectiveHomeDownMbps(load) / 8);
+  const replicationSeconds = Math.max(uploadSeconds, downloadSeconds);
+  const controlTrafficSeconds = internalControlMb === 0 ? 0 : Math.max(internalControlMb / Math.max(0.001, effectiveHomeUpMbps(load) / 8), internalControlMb / Math.max(0.001, effectiveHomeDownMbps(load) / 8));
+  const ingressFanoutSeconds = groupIngressFanoutSeconds(nodes, seed);
+  const finalizationSeconds = groupFinalizationSeconds(nodes, seed);
+  const coordinationSeconds = ingressFanoutSeconds + finalizationSeconds;
+  return {
+    replicationSeconds,
+    coordinationSeconds,
+    ingressFanoutSeconds,
+    finalizationSeconds,
+    controlTrafficSeconds,
+    totalSeconds: replicationSeconds + controlTrafficSeconds + ingressFanoutSeconds + finalizationSeconds,
+  };
 };
 
 export const workerQueueSeconds = (taskCount: number, workers: number, taskSeconds: number) =>
   Math.ceil(taskCount / Math.max(1, Math.min(taskCount, workers))) * taskSeconds;
 
-export const ordinaryIngressMbps = (load: number) => ORDINARY_VALIDATOR.wanMbps * 0.85 * Math.max(0.48, 0.95 - 0.31 * load);
-export const daShardMb = () => BLOCK.d3lSlotMb;
+export const ordinaryIngressMbps = (load: number) => ORDINARY_VALIDATOR.wanMbps * 0.85 * networkLoadFactor(load);
+export const daShardMb = (load = 1) => BLOCK.d3lSlotMb * clamp(load, 0, 1);

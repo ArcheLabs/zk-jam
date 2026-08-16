@@ -15,14 +15,12 @@ export const ORDINARY_VALIDATOR = {
   source: "JAM MODEL" as SourceTag,
 };
 
-export const SMALL_VALIDATOR = {
+export const HOME_NODE = {
   wanDownMbps: 100,
-  wanUpMbps: 50,
-  lanPortMbps: 1_000,
-  groupFabricMbps: 10_000,
-  verifyWorkersPerNode: 2,
-  replication: 3,
-  localRttMs: 0.5,
+  wanUpMbps: 20,
+  cpuCores: 4,
+  verifyWorkers: 2,
+  networkEfficiency: 0.75,
   source: "ZKJAM DESIGN" as SourceTag,
 };
 
@@ -34,4 +32,21 @@ export const ZK_REFERENCE = {
   source: "OPENVM REFERENCE" as SourceTag,
 };
 
-export const BLOCK = { mb: 16, d3lSlotMb: 42, source: "JAM MODEL" as SourceTag };
+export const BLOCK = { mb: 16, d3lSlotMb: 12.76704, source: "JAM MODEL" as SourceTag };
+
+export const GLOBAL_NETWORK = {
+  daSourceEgressMbps: 100_000,
+  blockSourceEgressMbps: 120_000,
+  regionalBackboneMbps: 30_000,
+  source: "ZKJAM DESIGN" as SourceTag,
+};
+
+export const GROUP_NETWORK = {
+  minDaShardMb: 0.25,
+  replicationFactor: 3,
+  overlayFanout: 4,
+  controlBytesPerNode: 8 * 1024,
+  minRttSeconds: 0.020,
+  maxRttSeconds: 0.030,
+  source: "ZKJAM DESIGN" as SourceTag,
+};
