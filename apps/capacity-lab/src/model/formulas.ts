@@ -35,4 +35,4 @@ export const workerQueueSeconds = (taskCount: number, workers: number, taskSecon
   Math.ceil(taskCount / Math.max(1, Math.min(taskCount, workers))) * taskSeconds;
 
 export const ordinaryIngressMbps = (load: number) => ORDINARY_VALIDATOR.wanMbps * 0.85 * Math.max(0.48, 0.95 - 0.31 * load);
-export const daShardMb = () => BLOCK.d3lSlotMb;
+export const daShardMb = (load = 1) => BLOCK.d3lSlotMb * clamp(load, 0, 1);

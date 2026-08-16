@@ -34,4 +34,4 @@ export const ZK_REFERENCE = {
   source: "OPENVM REFERENCE" as SourceTag,
 };
 
-export const BLOCK = { mb: 16, d3lSlotMb: 42, source: "JAM MODEL" as SourceTag };
+export const BLOCK = { mb: 16, d3lSlotMb: 12.76704, source: "JAM MODEL" as SourceTag };

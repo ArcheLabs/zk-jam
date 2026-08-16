@@ -1,7 +1,7 @@
 import { BLOCK, ORDINARY_VALIDATOR, PROTOCOL, SMALL_VALIDATOR, ZK_REFERENCE } from "../model/constants";
 import { clamp, daShardMb, gasFromEthBlocks, ordinaryIngressMbps, proofSeconds, quantile, workerQueueSeconds } from "../model/formulas";
 import type { LogicalSlotResult, Parameters, Region, Runtime, SimulationEvent, SimulationResult } from "../model/types";
-import { simulateRepresentativeGroup } from "./group";
+import { groupBlockSimulation, groupDaSimulation } from "./group";
 
 export const REGIONS: Region[] = [
   { name: "Tokyo", longitude: 139.7, latitude: 35.7 }, { name: "Singapore", longitude: 103.8, latitude: 1.3 },
@@ -13,7 +13,9 @@ export const REGIONS: Region[] = [
 ];
 
 const seeded = (seed: number) => { let value = seed >>> 0; return () => { value ^= value << 13; value ^= value >>> 17; value ^= value << 5; return (value >>> 0) / 4_294_967_296; }; };
-const distance = (a: Region, b: Region) => Math.hypot(a.longitude - b.longitude, a.latitude - b.latitude);
+const distance = (a: Region, b: Region) => Math.hypot((a.longitude - b.longitude) / 360, (a.latitude - b.latitude) / 180);
+const daLatencySeconds = (a: Region, b: Region, factor: number) => ((5 + distance(a, b) * 205) * factor) / 1000;
+const blockHeaderSeconds = (a: Region, b: Region, factor: number) => ((7 + distance(a, b) * 225) * factor) / 1000;
 
 function runtime(seed: number): Runtime {
   const random = seeded(seed);
@@ -33,8 +35,9 @@ export function buildScenario(params: Parameters, seed = 42): SimulationResult {
   const ordinarySlots = PROTOCOL.logicalValidators - groupedSlots;
   const activeCores = Math.max(1, Math.round(PROTOCOL.cores * load));
   const rt = runtime(seed);
-  const group = simulateRepresentativeGroup(nodes, load, daShardMb(), activeCores);
-  const shard = daShardMb();
+  const shard = daShardMb(load);
+  const groupDa = groupDaSimulation(nodes, load, shard);
+  const groupBlock = groupBlockSimulation(nodes, load, BLOCK.mb, activeCores);
   const ordinaryMbps = ordinaryIngressMbps(load);
   const ordinaryDa = shard / (ordinaryMbps / 8);
   const proofAvg = proofSeconds(eth);
@@ -44,19 +47,18 @@ export function buildScenario(params: Parameters, seed = 42): SimulationResult {
   const workDaTimes = Array.from({ length: PROTOCOL.logicalValidators }, (_, index) => {
     const source = rt.sources[index % rt.sources.length];
     const region = REGIONS[index % REGIONS.length];
-    return (5 + distance(region, source) * 0.012) * jitter(index) + (groupedSlot(index, groupedSlots) && nodes > 1 ? group.readySeconds : ordinaryDa);
+    return daLatencySeconds(region, source, jitter(index)) + (groupedSlot(index, groupedSlots) && nodes > 1 ? groupDa.readySeconds : ordinaryDa);
   });
   const workDaTwoThird = quantile(workDaTimes, 2 / 3);
   const workReport = refine + Math.max(proofAvg, workDaTwoThird) + ZK_REFERENCE.aggregateSeconds;
   const proofGate = Math.max(PROTOCOL.slotSeconds, workReport);
-  const groupReplication = group.replicationSeconds;
-  const groupVerify = workerQueueSeconds(activeCores, nodes * SMALL_VALIDATOR.verifyWorkersPerNode, 0.025);
+  const groupVerify = groupBlock.verifySeconds;
   const ordinaryVerify = workerQueueSeconds(activeCores, ORDINARY_VALIDATOR.verifyWorkers, 0.025);
   const logicalSlots: LogicalSlotResult[] = Array.from({ length: PROTOCOL.logicalValidators }, (_, index) => {
     const region = REGIONS[index % REGIONS.length];
     const grouped = groupedSlot(index, groupedSlots) && nodes > 1;
-    const header = (0.007 + distance(region, rt.producer) * 0.00025) * jitter(index);
-    const data = grouped ? group.readySeconds : BLOCK.mb / (ordinaryMbps / 8);
+    const header = blockHeaderSeconds(region, rt.producer, jitter(index));
+    const data = grouped ? groupBlock.dataSeconds : BLOCK.mb / (ordinaryMbps / 8);
     const verify = grouped ? groupVerify : ordinaryVerify;
     const daCheck = header * 0.35 + 0.005;
     const blockReady = header + Math.max(data, verify, daCheck) + header + 0.01;
@@ -75,7 +77,7 @@ export function buildScenario(params: Parameters, seed = 42): SimulationResult {
     { time: refine, type: "PROOF_START" }, { time: refine, type: "DA_START" },
     { time: refine + proofAvg, type: "PROOF_DONE" }, { time: refine + workDaTwoThird, type: "DA_2_3_READY" },
     { time: workReport, type: "REPORT_READY" }, { time: proofGate, type: "BLOCK_PUBLISHED", region: rt.producer },
-    ...logicalSlots.slice(0, 300).map((slot) => ({ time: proofGate + slot.blockReady, type: "LOGICAL_READY" as const, slot: slot.index, region: slot.region })),
+    ...logicalSlots.map((slot) => ({ time: proofGate + slot.blockReady, type: "LOGICAL_READY" as const, slot: slot.index, region: slot.region })),
     { time: effectiveInterval, type: "QUORUM_2_3" },
   ].sort((a, b) => a.time - b.time) as SimulationEvent[];
   return {
@@ -85,7 +87,7 @@ export function buildScenario(params: Parameters, seed = 42): SimulationResult {
       physicalNodes, groupedSlots, ordinarySlots, activeCores, gasEquivalent: gasFromEthBlocks(eth), itemsPerPackage,
       proofAvg, proofP99, workDaTwoThird, workReport, proofGate, blockTwoThird, effectiveInterval,
       groupDaP50, ordinaryDaP50, groupReadyP50, ordinaryReadyP50,
-      smallNodeDaMbps: (shard / Math.max(0.001, group.externalSeconds) / Math.max(1, nodes)) * 8,
+      smallNodeDaMbps: (shard / Math.max(0.001, groupDa.externalSeconds) / Math.max(1, nodes)) * 8,
       requiredClusters, pressure: requiredClusters > 1_000 ? "PROVER-BOUND" : "NETWORK / VERIFY",
     }, events, logicalSlots,
   };
