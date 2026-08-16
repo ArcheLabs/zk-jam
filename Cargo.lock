@@ -4665,6 +4665,7 @@ dependencies = [
  "eyre",
  "serde_json",
  "zk-jam-benchmark",
+ "zk-jam-cost-model",
  "zk-jam-openvm-backend",
  "zk-jam-refine-interface",
 ]
@@ -4678,6 +4679,21 @@ dependencies = [
  "jsonschema",
  "serde",
  "serde_json",
+ "zk-jam-openvm-backend",
+ "zk-jam-refine-interface",
+ "zk-jam-translation",
+]
+
+[[package]]
+name = "zk-jam-cost-model"
+version = "0.1.0"
+dependencies = [
+ "eyre",
+ "openvm-sdk",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.20",
  "zk-jam-openvm-backend",
  "zk-jam-refine-interface",
  "zk-jam-translation",

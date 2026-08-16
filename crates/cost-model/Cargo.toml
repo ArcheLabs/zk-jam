@@ -1,5 +1,5 @@
 [package]
-name = "zk-jam"
+name = "zk-jam-cost-model"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -7,8 +7,11 @@ authors.workspace = true
 
 [dependencies]
 eyre = "0.6"
+openvm-sdk.workspace = true
+serde.workspace = true
 serde_json.workspace = true
-zk-jam-benchmark = { path = "../benchmark" }
-zk-jam-cost-model = { path = "../cost-model" }
+sha2.workspace = true
+thiserror.workspace = true
 zk-jam-openvm-backend = { path = "../openvm-backend" }
 zk-jam-refine-interface = { path = "../refine-interface" }
+zk-jam-translation = { path = "../translation" }

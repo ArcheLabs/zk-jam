@@ -148,6 +148,24 @@ pub struct OpenVmExecutionResult {
     pub executable_bytes: usize,
 }
 
+/// The execution-only segmentation data returned by OpenVM's official metered executor.
+/// `trace_heights` are kept air-indexed because the SDK intentionally does not expose stable
+/// chip names in this API.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct OpenVmTraceSegment {
+    pub instret_start: u64,
+    pub num_insns: u64,
+    pub trace_heights: Vec<u32>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct OpenVmTraceMetrics {
+    pub benchmark: M2Benchmark,
+    pub public_output: Vec<u8>,
+    pub executed_instruction_count: u64,
+    pub segments: Vec<OpenVmTraceSegment>,
+}
+
 /// A reloadable OpenVM proof plus all context needed for independent verification.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct OpenVmProofArtifact {
@@ -523,6 +541,53 @@ impl OpenVmBackend {
             elapsed_ns: started.elapsed().as_nanos(),
             executable_bytes: prepared.program.serialized_executable_size_bytes,
         })
+    }
+
+    /// Execute with OpenVM's official segmentation/metering path, without generating a proof.
+    pub fn execute_metered(
+        &self,
+        program: &OpenVmProgramArtifact,
+        input: M2Input,
+    ) -> Result<OpenVmTraceMetrics> {
+        self.execute_metered_batch(&[(program, input)])
+            .map(|mut metrics| metrics.remove(0))
+    }
+
+    /// Execute several direct executables with one SDK/app-key cache. This is still execution
+    /// only; the SDK's official metered executor returns segmentation data and no proof artifact.
+    pub fn execute_metered_batch(
+        &self,
+        programs: &[(&OpenVmProgramArtifact, M2Input)],
+    ) -> Result<Vec<OpenVmTraceMetrics>> {
+        if programs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let sdk = sdk_for_benchmark(&programs[0].0.benchmark);
+        let mut output = Vec::with_capacity(programs.len());
+        for (program, input) in programs {
+            let (public_output, segments) = sdk
+                .execute_metered(
+                    ExecutableFormat::SharedVmExe(program.exe.clone()),
+                    input.stdin(),
+                )
+                .map_err(|error| eyre!("metered execute {}: {error}", program.benchmark.name()))?;
+            let segments = segments
+                .into_iter()
+                .map(|segment| OpenVmTraceSegment {
+                    instret_start: segment.instret_start,
+                    num_insns: segment.num_insns,
+                    trace_heights: segment.trace_heights,
+                })
+                .collect::<Vec<_>>();
+            let executed_instruction_count = segments.iter().map(|segment| segment.num_insns).sum();
+            output.push(OpenVmTraceMetrics {
+                benchmark: program.benchmark.clone(),
+                public_output,
+                executed_instruction_count,
+                segments,
+            });
+        }
+        Ok(output)
     }
 
     pub fn prove(

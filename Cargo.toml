@@ -5,6 +5,7 @@ members = [
   "crates/statement",
   "crates/translation",
   "crates/openvm-backend",
+  "crates/cost-model",
   "crates/native",
   "crates/benchmark",
   "crates/cli",

@@ -115,6 +115,9 @@ pub enum NativePvmError {
 pub struct NativePvmProgram {
     pub exe: VmExe<F>,
     pub pvm_instruction_count: usize,
+    pub input_prefix_instruction_count: usize,
+    pub pvm_core_instruction_count: usize,
+    pub proof_envelope_instruction_count: usize,
     pub openvm_instruction_count: usize,
     pub pc_map: NativePcMap,
 }
@@ -136,6 +139,7 @@ impl NativePvmLowerer {
         self.validate_fixture(program, output_register)?;
 
         let mut instructions = self.input_prefix()?;
+        let input_prefix_instruction_count = instructions.len();
         let block_counts = translated
             .blocks
             .iter()
@@ -163,7 +167,10 @@ impl NativePvmLowerer {
                 postlude_pc,
             )?;
         }
+        let pvm_core_instruction_count = instructions.len() - input_prefix_instruction_count;
+        let proof_envelope_start = instructions.len();
         instructions.extend(self.commitment_and_public_values(program, output_register)?);
+        let proof_envelope_instruction_count = instructions.len() - proof_envelope_start;
 
         let mut init_memory = BTreeMap::new();
         write_u32(
@@ -199,6 +206,10 @@ impl NativePvmLowerer {
             exe: VmExe::new(Program::from_instructions(&instructions))
                 .with_init_memory(init_memory),
             pvm_instruction_count: program.instruction_count(),
+            input_prefix_instruction_count,
+            pvm_core_instruction_count,
+            proof_envelope_instruction_count: input_prefix_instruction_count
+                + proof_envelope_instruction_count,
             openvm_instruction_count: instructions.len(),
             pc_map: NativePcMap {
                 pvm_block_to_openvm_pc: pc_map,

@@ -134,3 +134,31 @@ M4's mechanical translation binding. The publication report is a
 single-sample diagnostic and does not demonstrate full JAM Refine, production
 proving performance, or Kusama integration. The workflow uploads the result as
 `m4-publication-${sha}-${run_id}` and never commits or pushes benchmark data.
+
+## PVM → OpenVM Cost Model
+
+The cost-model workflow is the execution-only A+B lane. It reuses the existing
+`PvmProgramV1` fixtures and `NativePvmLowerer`, then records Gray Paper 0.8.0
+basic-block gas, actual lowered `VmExe` instruction/category counts, and
+OpenVM official metered segments. `proof_work_v1` is the sum of padded segment
+trace heights across AIR indices; it is not an instruction count.
+
+Run locally with:
+
+```text
+zk-jam cost-model ci --output benchmarks/results/cost-model
+```
+
+This writes `cost-model-static.json`, `cost-model-trace.json`,
+`cost-model-combined.json`, and `pvm-openvm-cost-model.md`. The workflow does
+not run ZK proving. GPU calibration is a separate local command:
+
+```text
+zk-jam cost-model gpu-calibrate --workload arithmetic --samples 3 --warmup 1 \
+  --output benchmarks/results/gpu-calibration.json
+zk-jam cost-model aggregate --cost-model benchmarks/results/cost-model/cost-model-combined.json \
+  --gpu-calibration benchmarks/results/gpu-calibration.json \
+  --output benchmarks/results/cost-model-final.json
+```
+
+The combined schema is `schema/pvm-openvm-cost-model-v1.schema.json`.

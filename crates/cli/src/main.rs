@@ -13,6 +13,7 @@ use zk_jam_benchmark::{
     validate_m4_report, validate_pvm_openvm_report, verify_jambda_provenance, BenchmarkOptions,
     M4ProgramId,
 };
+use zk_jam_cost_model as cost_model;
 use zk_jam_openvm_backend::{M2Benchmark, M2Input, OpenVmBackend};
 use zk_jam_refine_interface::{
     CanonicalCodec, PvmBlockV1, PvmInstructionV1, PvmProgramV1, PvmTerminatorV1, RefineCaseV1,
@@ -50,6 +51,109 @@ fn usage() {
     eprintln!("       zk-jam bench pvm-openvm-workload --workload arithmetic|branch|memory [--semantic-gate <report.json>] [--output benchmarks/results]");
     eprintln!("       zk-jam bench pvm-openvm-aggregate --semantic-gate <report.json> --partial-arithmetic <report.json> --partial-branch <report.json> --partial-memory <report.json> [--output benchmarks/results]");
     eprintln!("       zk-jam bench validate-pvm-openvm <report.json> [--schema schema.json]");
+    eprintln!("       zk-jam cost-model analyze --output benchmarks/results");
+    eprintln!(
+        "       zk-jam cost-model validate-trace [--workload NAME] --output benchmarks/results"
+    );
+    eprintln!("       zk-jam cost-model ci --output benchmarks/results");
+    eprintln!("       zk-jam cost-model gpu-calibrate [--workload NAME] [--samples N] [--warmup N] --output gpu-calibration.json");
+    eprintln!("       zk-jam cost-model aggregate --cost-model cost-model-combined.json --gpu-calibration gpu-calibration.json --output cost-model-final.json");
+}
+
+fn cost_model_command(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let subcommand = args.get(1).ok_or("missing cost-model subcommand")?;
+    let output = |default: &str| {
+        args.iter()
+            .position(|arg| arg == "--output")
+            .and_then(|index| args.get(index + 1))
+            .map_or_else(|| PathBuf::from(default), PathBuf::from)
+    };
+    match subcommand.as_str() {
+        "analyze" => {
+            let directory = output("benchmarks/results");
+            fs::create_dir_all(&directory)?;
+            let report = cost_model::analyze_static()?;
+            fs::write(
+                directory.join("cost-model-static.json"),
+                serde_json::to_vec_pretty(&report)?,
+            )?;
+        }
+        "validate-trace" => {
+            let directory = output("benchmarks/results");
+            fs::create_dir_all(&directory)?;
+            let workload = args
+                .iter()
+                .position(|arg| arg == "--workload")
+                .and_then(|index| args.get(index + 1))
+                .map(String::as_str);
+            let report = cost_model::validate_trace_for(workload)?;
+            fs::write(
+                directory.join("cost-model-trace.json"),
+                serde_json::to_vec_pretty(&report)?,
+            )?;
+        }
+        "ci" => cost_model::run_ci(&output("benchmarks/results"))?,
+        "gpu-calibrate" => {
+            let workload = args
+                .iter()
+                .position(|arg| arg == "--workload")
+                .and_then(|index| args.get(index + 1))
+                .map(String::as_str);
+            let samples = match args
+                .iter()
+                .position(|arg| arg == "--samples")
+                .and_then(|index| args.get(index + 1))
+            {
+                Some(value) => value.parse::<usize>()?,
+                None => 1,
+            };
+            let warmup = match args
+                .iter()
+                .position(|arg| arg == "--warmup")
+                .and_then(|index| args.get(index + 1))
+            {
+                Some(value) => value.parse::<usize>()?,
+                None => 0,
+            };
+            let path = args
+                .iter()
+                .position(|arg| arg == "--output")
+                .and_then(|index| args.get(index + 1))
+                .ok_or("gpu-calibrate requires --output")?;
+            let report = cost_model::gpu_calibrate(workload, samples, warmup)?;
+            if let Some(parent) = Path::new(path)
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+            {
+                fs::create_dir_all(parent)?;
+            }
+            fs::write(path, serde_json::to_vec_pretty(&report)?)?;
+        }
+        "aggregate" => {
+            let combined = args
+                .iter()
+                .position(|arg| arg == "--cost-model")
+                .and_then(|index| args.get(index + 1))
+                .ok_or("missing --cost-model")?;
+            let calibration = args
+                .iter()
+                .position(|arg| arg == "--gpu-calibration")
+                .and_then(|index| args.get(index + 1))
+                .ok_or("missing --gpu-calibration")?;
+            let path = args
+                .iter()
+                .position(|arg| arg == "--output")
+                .and_then(|index| args.get(index + 1))
+                .ok_or("missing --output")?;
+            cost_model::aggregate_file(
+                Path::new(combined),
+                Path::new(calibration),
+                Path::new(path),
+            )?;
+        }
+        other => return Err(format!("unknown cost-model subcommand: {other}").into()),
+    }
+    Ok(())
 }
 
 fn benchmark(name: &str) -> Result<(M2Benchmark, M2Input), Box<dyn std::error::Error>> {
@@ -939,6 +1043,13 @@ fn main() -> ExitCode {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
                 eprintln!("zk-jam: {error}");
+                ExitCode::FAILURE
+            }
+        },
+        (Some("cost-model"), _) => match cost_model_command(&argv) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("zk-jam cost-model: {error}");
                 ExitCode::FAILURE
             }
         },
