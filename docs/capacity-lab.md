@@ -1,6 +1,6 @@
 # ZkJAM Capacity Lab
 
-The static browser application lives in `apps/capacity-lab`. It is a Vite + React + TypeScript site designed for GitHub Pages at `/zk-jam/`. The world map is a locally bundled Natural Earth 1:110m Admin 0 Countries GeoJSON file rendered by deck.gl; it has no tiles, map API, CDN runtime, or API key.
+The static browser application lives in `apps/capacity-lab`. It is a Vite + React + TypeScript site designed for GitHub Pages. It uses relative asset paths so the published artifact works at repository pages, custom domains, and other supported subpaths. The world map is a locally bundled Natural Earth 1:110m Admin 0 Countries GeoJSON file rendered by deck.gl; it has no tiles, map API, CDN runtime, or API key.
 
 ## Model: Geographically Local Honest Group Model v2
 
