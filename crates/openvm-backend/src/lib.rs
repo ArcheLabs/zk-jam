@@ -18,6 +18,8 @@ use openvm_stark_sdk::config::{app_params_with_100_bits_security, MAX_APP_LOG_ST
 use openvm_verify_stark_host::VmStarkProof;
 use serde::{Deserialize, Serialize};
 
+pub mod native_pvm;
+
 pub const OPENVM_VERSION: &str = "2.0.1";
 pub const OPENVM_REVISION: &str = "b820b25baab6c5d9b055f64e0286b6b1058e707c";
 pub const OPENVM_BACKEND: &str = "cpu";
@@ -45,6 +47,7 @@ pub enum M2Benchmark {
     M4NativeArithmetic,
     M4NativeBranch,
     M4NativeMemory16K,
+    ZkRefine,
 }
 
 impl M2Benchmark {
@@ -62,6 +65,7 @@ impl M2Benchmark {
             Self::M4NativeArithmetic => "m4-native-arithmetic",
             Self::M4NativeBranch => "m4-native-branch",
             Self::M4NativeMemory16K => "m4-native-memory-16384",
+            Self::ZkRefine => "zkrefine",
         }
     }
 
@@ -92,6 +96,7 @@ impl M2Benchmark {
             Self::M4NativeArithmetic => "m4-native-arithmetic-v1",
             Self::M4NativeBranch => "m4-native-branch-v1",
             Self::M4NativeMemory16K => "m4-native-memory-16384-v1",
+            Self::ZkRefine => "zkrefine-v1",
         }
     }
 }
@@ -106,6 +111,7 @@ pub struct OpenVmProgramArtifact {
     pub serialized_executable_size_bytes: usize,
     pub build_time_ns: u128,
     pub transpile_time_ns: u128,
+    pub native_lowering_time_ns: u128,
     exe: Arc<openvm_sdk::openvm_circuit::arch::instructions::exe::VmExe<openvm_sdk::F>>,
 }
 
@@ -120,6 +126,7 @@ impl OpenVmProgramArtifact {
             serialized_executable_size_bytes: self.serialized_executable_size_bytes,
             build_time_ns: self.build_time_ns,
             transpile_time_ns: self.transpile_time_ns,
+            native_lowering_time_ns: self.native_lowering_time_ns,
             exe: self.exe.clone(),
         }
     }
@@ -142,6 +149,24 @@ pub struct OpenVmExecutionResult {
     pub public_output: Vec<u8>,
     pub elapsed_ns: u128,
     pub executable_bytes: usize,
+}
+
+/// The execution-only segmentation data returned by OpenVM's official metered executor.
+/// `trace_heights` are kept air-indexed because the SDK intentionally does not expose stable
+/// chip names in this API.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct OpenVmTraceSegment {
+    pub instret_start: u64,
+    pub num_insns: u64,
+    pub trace_heights: Vec<u32>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct OpenVmTraceMetrics {
+    pub benchmark: M2Benchmark,
+    pub public_output: Vec<u8>,
+    pub executed_instruction_count: u64,
+    pub segments: Vec<OpenVmTraceSegment>,
 }
 
 /// A reloadable OpenVM proof plus all context needed for independent verification.
@@ -362,7 +387,12 @@ impl OpenVmBackend {
 
     pub fn program(&self, benchmark: M2Benchmark) -> Result<OpenVmProgramArtifact> {
         let binary = benchmark.guest_binary();
-        self.program_from_guest_dir(benchmark, &guest_dir(), binary)
+        let directory = if matches!(benchmark, M2Benchmark::ZkRefine) {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("guests/zkrefine")
+        } else {
+            guest_dir()
+        };
+        self.program_from_guest_dir(benchmark, &directory, binary)
     }
 
     /// Build an OpenVM executable from a caller-provided generated guest package. M4 uses this
@@ -416,7 +446,41 @@ impl OpenVmBackend {
             serialized_executable_size_bytes,
             build_time_ns,
             transpile_time_ns,
+            native_lowering_time_ns: 0,
             exe,
+        })
+    }
+
+    /// Wrap a directly constructed OpenVM executable in the same artifact used by the frontend
+    /// path. This is the M4.1 injection boundary: no guest build or ELF transpilation occurs.
+    pub fn program_from_vm_exe(
+        &self,
+        benchmark: M2Benchmark,
+        exe: openvm_sdk::openvm_circuit::arch::instructions::exe::VmExe<openvm_sdk::F>,
+        emission_path: &'static str,
+    ) -> Result<OpenVmProgramArtifact> {
+        let executable_bytes =
+            exe.program.instructions_and_debug_infos.len() * 32 + exe.init_memory.len() * 8;
+        let init_memory = exe
+            .init_memory
+            .iter()
+            .map(|((address_space, address), value)| (*address_space, *address, *value))
+            .collect::<Vec<_>>();
+        let serialized_executable_size_bytes =
+            serde_json::to_vec(&(&exe.program, exe.pc_start, init_memory, &exe.fn_bounds))
+                .wrap_err("serialize direct OpenVM executable for size measurement")?
+                .len();
+        Ok(OpenVmProgramArtifact {
+            benchmark,
+            openvm_version: OPENVM_VERSION,
+            openvm_revision: OPENVM_REVISION,
+            emission_path,
+            executable_bytes,
+            serialized_executable_size_bytes,
+            build_time_ns: 0,
+            transpile_time_ns: 0,
+            native_lowering_time_ns: 0,
+            exe: Arc::new(exe),
         })
     }
 
@@ -465,6 +529,26 @@ impl OpenVmBackend {
         })
     }
 
+    /// Execute a caller-owned serialized witness stream. ZkRefine uses this to keep the complete
+    /// canonical RefineCase private to the guest input rather than reducing it to M2 words.
+    pub fn execute_stdin(
+        &self,
+        program: &OpenVmProgramArtifact,
+        stdin: StdIn,
+    ) -> Result<OpenVmExecutionResult> {
+        let sdk = sdk_for_benchmark(&program.benchmark);
+        let started = Instant::now();
+        let public_output = sdk
+            .execute(ExecutableFormat::SharedVmExe(program.exe.clone()), stdin)
+            .map_err(|error| eyre!("execute {}: {error}", program.benchmark.name()))?;
+        Ok(OpenVmExecutionResult {
+            benchmark: program.benchmark.clone(),
+            public_output,
+            elapsed_ns: started.elapsed().as_nanos(),
+            executable_bytes: program.serialized_executable_size_bytes,
+        })
+    }
+
     pub fn execute_prepared(
         &self,
         prepared: &OpenVmPreparedProgram,
@@ -485,6 +569,53 @@ impl OpenVmBackend {
             elapsed_ns: started.elapsed().as_nanos(),
             executable_bytes: prepared.program.serialized_executable_size_bytes,
         })
+    }
+
+    /// Execute with OpenVM's official segmentation/metering path, without generating a proof.
+    pub fn execute_metered(
+        &self,
+        program: &OpenVmProgramArtifact,
+        input: M2Input,
+    ) -> Result<OpenVmTraceMetrics> {
+        self.execute_metered_batch(&[(program, input)])
+            .map(|mut metrics| metrics.remove(0))
+    }
+
+    /// Execute several direct executables with one SDK/app-key cache. This is still execution
+    /// only; the SDK's official metered executor returns segmentation data and no proof artifact.
+    pub fn execute_metered_batch(
+        &self,
+        programs: &[(&OpenVmProgramArtifact, M2Input)],
+    ) -> Result<Vec<OpenVmTraceMetrics>> {
+        if programs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let sdk = sdk_for_benchmark(&programs[0].0.benchmark);
+        let mut output = Vec::with_capacity(programs.len());
+        for (program, input) in programs {
+            let (public_output, segments) = sdk
+                .execute_metered(
+                    ExecutableFormat::SharedVmExe(program.exe.clone()),
+                    input.stdin(),
+                )
+                .map_err(|error| eyre!("metered execute {}: {error}", program.benchmark.name()))?;
+            let segments = segments
+                .into_iter()
+                .map(|segment| OpenVmTraceSegment {
+                    instret_start: segment.instret_start,
+                    num_insns: segment.num_insns,
+                    trace_heights: segment.trace_heights,
+                })
+                .collect::<Vec<_>>();
+            let executed_instruction_count = segments.iter().map(|segment| segment.num_insns).sum();
+            output.push(OpenVmTraceMetrics {
+                benchmark: program.benchmark.clone(),
+                public_output,
+                executed_instruction_count,
+                segments,
+            });
+        }
+        Ok(output)
     }
 
     pub fn prove(
@@ -534,6 +665,48 @@ impl OpenVmBackend {
             proof: versioned,
             baseline: baseline.into(),
             agg_vk: prepared.agg_vk.clone(),
+        })
+    }
+
+    /// Prove a caller-owned serialized witness stream. The context hash is supplied by the
+    /// application statement layer and is checked again by `OpenVmProofArtifact::verify`.
+    pub fn prove_stdin(
+        &self,
+        program: &OpenVmProgramArtifact,
+        stdin: StdIn,
+        context_hash: String,
+    ) -> Result<OpenVmProofArtifact> {
+        let prepared = self.prepare(program.clone_for_proving())?;
+        let prove_started = Instant::now();
+        let (proof, baseline) = prepared
+            .sdk
+            .prove(
+                ExecutableFormat::SharedVmExe(prepared.program.exe.clone()),
+                stdin,
+                &[],
+            )
+            .map_err(|error| eyre!("prove {}: {error}", prepared.program.benchmark.name()))?;
+        let public_output = proof
+            .user_pvs_proof
+            .public_values
+            .iter()
+            .map(|value| value.as_canonical_u32() as u8)
+            .collect::<Vec<_>>();
+        let versioned = VersionedVmStarkProof::new(proof)
+            .map_err(|error| eyre!("encode OpenVM proof: {error}"))?;
+        Ok(OpenVmProofArtifact {
+            benchmark: prepared.program.benchmark.clone(),
+            openvm_version: OPENVM_VERSION.to_string(),
+            openvm_revision: OPENVM_REVISION.to_string(),
+            backend: OPENVM_BACKEND.to_string(),
+            security_bits: 100,
+            keygen_time_ns: prepared.keygen_time_ns,
+            prove_time_ns: prove_started.elapsed().as_nanos(),
+            context_hash,
+            public_output,
+            proof: versioned,
+            baseline: baseline.into(),
+            agg_vk: prepared.agg_vk,
         })
     }
 
@@ -610,6 +783,7 @@ fn sdk_for_benchmark(benchmark: &M2Benchmark) -> OpenVmSdk {
             | M2Benchmark::M4NativeArithmetic
             | M2Benchmark::M4NativeBranch
             | M2Benchmark::M4NativeMemory16K
+            | M2Benchmark::ZkRefine
     ) {
         let app_params = app_params_with_100_bits_security(MAX_APP_LOG_STACKED_HEIGHT);
         let mut app_config = AppConfig::riscv32(app_params);
@@ -619,6 +793,10 @@ fn sdk_for_benchmark(benchmark: &M2Benchmark) -> OpenVmSdk {
             .config
             .clone()
             .with_public_values(M4_OPENVM_PUBLIC_VALUES_LEN);
+        // NativePvm uses the pinned, already-existing OpenVM SHA-2 extension for the dynamic
+        // M4 input commitment. FrontendTranslated continues to execute its software SHA path;
+        // both implementations use this same M4 VM configuration and public-values envelope.
+        app_config.app_vm_config.sha2 = Some(Default::default());
         return Sdk::new(app_config, AggregationSystemParams::default())
             .expect("valid M4 OpenVM SDK configuration");
     }
@@ -778,6 +956,98 @@ mod tests {
             select_guest_toolchain("nightly-x86_64-unknown-linux-gnu\n"),
             "nightly"
         );
+    }
+
+    #[test]
+    fn native_pvm_arithmetic_execute_matches_m4_public_statement() {
+        let backend = OpenVmBackend;
+        let source =
+            zk_jam_translation::workload_program(zk_jam_translation::M3Workload::Arithmetic);
+        let lowered = native_pvm::NativePvmLowerer::default()
+            .lower(&source, 7)
+            .unwrap();
+        let artifact = backend
+            .program_from_vm_exe(
+                M2Benchmark::M4NativeArithmetic,
+                lowered.exe,
+                "NativePvm: PvmProgramV1 -> OpenVM Instructions",
+            )
+            .unwrap();
+        let execution = backend
+            .execute(&artifact, M2Input::arithmetic(7, 9))
+            .unwrap();
+        let values = M4PublicValuesV1::decode_openvm(&execution.public_output).unwrap();
+        let input = zk_jam_translation::ExecutionInputV1::new(vec![7, 9]);
+        assert_eq!(
+            values.program_commitment,
+            zk_jam_translation::program_commitment(&source)
+        );
+        assert_eq!(
+            values.input_commitment,
+            zk_jam_translation::input_commitment(&input)
+        );
+        assert_eq!(
+            u32::from_le_bytes(values.output[..4].try_into().unwrap()),
+            0xA5A5_5A6A
+        );
+        assert!(values.output[4..].iter().all(|byte| *byte == 0));
+    }
+
+    #[test]
+    fn native_pvm_all_six_m4_cases_match_reference_execute_only() {
+        let backend = OpenVmBackend;
+        let cases = [
+            (zk_jam_translation::M3Workload::Arithmetic, 7, 7, 9),
+            (zk_jam_translation::M3Workload::Arithmetic, 7, 10, 20),
+            (zk_jam_translation::M3Workload::BranchTrue, 5, 21, 8),
+            (zk_jam_translation::M3Workload::BranchTrue, 5, 8, 21),
+            (zk_jam_translation::M3Workload::BranchTrue, 5, 8, 8),
+            (
+                zk_jam_translation::M3Workload::Memory16K,
+                2,
+                0x1234_5678,
+                16 * 1024,
+            ),
+        ];
+        for (workload, output_register, a, b) in cases {
+            let source = zk_jam_translation::workload_program(workload);
+            let lowered = native_pvm::NativePvmLowerer::default()
+                .lower(&source, output_register)
+                .unwrap();
+            let benchmark = match workload {
+                zk_jam_translation::M3Workload::Arithmetic => M2Benchmark::M4NativeArithmetic,
+                zk_jam_translation::M3Workload::BranchTrue => M2Benchmark::M4NativeBranch,
+                zk_jam_translation::M3Workload::Memory16K => M2Benchmark::M4NativeMemory16K,
+            };
+            let artifact = backend
+                .program_from_vm_exe(
+                    benchmark,
+                    lowered.exe,
+                    "NativePvm: PvmProgramV1 -> OpenVM Instructions",
+                )
+                .unwrap();
+            let execution = backend
+                .execute(&artifact, M2Input::arithmetic(a, b))
+                .unwrap();
+            let values = M4PublicValuesV1::decode_openvm(&execution.public_output).unwrap();
+            let input = zk_jam_translation::ExecutionInputV1::new(vec![a, b]);
+            let expected = zk_jam_translation::execute_reference(&source, &input, output_register)
+                .unwrap() as u32;
+            assert_eq!(
+                values.program_commitment,
+                zk_jam_translation::program_commitment(&source)
+            );
+            assert_eq!(
+                values.input_commitment,
+                zk_jam_translation::input_commitment(&input),
+                "input commitment mismatch for {workload:?} ({a}, {b})",
+            );
+            assert_eq!(
+                u32::from_le_bytes(values.output[..4].try_into().unwrap()),
+                expected
+            );
+            assert!(values.output[4..].iter().all(|byte| *byte == 0));
+        }
     }
 
     #[test]

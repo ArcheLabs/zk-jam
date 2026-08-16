@@ -10,7 +10,7 @@ pub fn main() {
     let requested_bytes: u32 = read();
     let words = (requested_bytes / core::mem::size_of::<u32>() as u32) as usize;
     let mut memory = [0u32; 4096];
-    let mut state = seed;
+    let mut state = 0x1234_5678u32;
     for (index, slot) in memory[..words].iter_mut().enumerate() {
         state = state
             .wrapping_mul(1_664_525)
@@ -20,6 +20,6 @@ pub fn main() {
     }
     let output = memory[..words]
         .iter()
-        .fold(seed, |acc, value| acc.wrapping_add(*value));
+        .fold(requested_bytes, |acc, value| acc.wrapping_add(*value));
     reveal_statement(MEMORY_PROGRAM_COMMITMENT, seed, requested_bytes, output);
 }

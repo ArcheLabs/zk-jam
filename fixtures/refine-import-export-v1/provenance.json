@@ -1,0 +1,14 @@
+{
+  "schema": "zk-jam/reference-case/v1",
+  "reference_client": "Jambda",
+  "reference_revision": "b850a458fa00da81e80be4cc84ddd7d2222f1edc",
+  "jam_semantics": "0.7.2",
+  "profile": "zk-jam/zkrefine/import-export/v1",
+  "work_items": 1,
+  "fetch_host_call": 1,
+  "fetch_modes": [
+    6
+  ],
+  "export_host_call": 7,
+  "segment_bytes": 4104
+}

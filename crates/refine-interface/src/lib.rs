@@ -1,6 +1,6 @@
-//! Client-independent, versioned input and output types for ZkRefine Smoke-v0.
+//! Client-independent, versioned input and output types for the ZkRefine Profile v1.
 //!
-//! This crate deliberately contains no Jambda or zkVM implementation types. A
+//! This crate deliberately contains no client or zkVM implementation types. A
 //! client adapter owns the conversion from its internal representation into
 //! these types. The canonical binary codec in [`codec`] is the interchange
 //! format; JSON is only a debugging representation.
@@ -14,7 +14,7 @@ pub mod program;
 pub mod result;
 pub mod state_witness;
 
-pub use case::{RefineCaseV1, SegmentBytes, SmokeProfile, SmokeProfileV0};
+pub use case::{RefineCaseV1, SegmentBytes, ZkRefineProfile, ZkRefineProfileV1};
 pub use codec::{CanonicalCodec, CodecError};
 pub use commitment::{
     input_commitments, statement_for, RefineInputCommitmentsV0, ZkRefineStatementV0,
@@ -25,13 +25,19 @@ pub use program::{
 };
 pub use result::{ReferenceRefineOutput, RefineResultV0};
 pub use state_witness::{HistoricalLookupWitnessV1, RefineStateWitnessV1, StateWitnessBindingV1};
+pub use zkrefine::{
+    zkrefine_exports_canonical, zkrefine_exports_commitment, zkrefine_hash, zkrefine_profile_id,
+    zkrefine_result_commitment, ZkRefineExportsV1, ZkRefineStatementV1, ZKREFINE_CASE_DOMAIN,
+};
 
 pub const REFINE_CASE_FORMAT_V1: u16 = 1;
 pub const JAM_SEMANTICS_VERSION_0_7_2: u16 = 0x0702;
 pub const PVM_REGISTER_COUNT: usize = 13;
+
+mod zkrefine;
 pub const SEGMENT_SIZE: usize = 4_104;
 
-/// A host call or execution feature outside Smoke-v0.
+/// A host call or execution feature outside ZkRefine Profile v1.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum UnsupportedFeature {
     GasHostCall,
@@ -42,10 +48,14 @@ pub enum UnsupportedFeature {
 impl std::fmt::Display for UnsupportedFeature {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::GasHostCall => f.write_str("GAS host call is not supported by Smoke-v0"),
-            Self::InnerPvm => f.write_str("Inner PVM host calls are not supported by Smoke-v0"),
+            Self::GasHostCall => {
+                f.write_str("GAS host call is not supported by ZkRefine Profile v1")
+            }
+            Self::InnerPvm => {
+                f.write_str("Inner PVM host calls are not supported by ZkRefine Profile v1")
+            }
             Self::UnsupportedHostCall(id) => {
-                write!(f, "host call {id} is not supported by Smoke-v0")
+                write!(f, "host call {id} is not supported by ZkRefine Profile v1")
             }
         }
     }
@@ -53,7 +63,7 @@ impl std::fmt::Display for UnsupportedFeature {
 
 impl std::error::Error for UnsupportedFeature {}
 
-/// Check the fixed Smoke-v0 host-call admission policy.
+/// Check the fixed ZkRefine Profile v1 host-call admission policy.
 pub fn check_host_call(id: u32) -> Result<(), UnsupportedFeature> {
     match id {
         0 => Err(UnsupportedFeature::GasHostCall),
@@ -92,13 +102,13 @@ mod tests {
     }
 
     #[test]
-    fn smoke_profile_is_fixed_to_no_gas_no_inner_pvm() {
-        assert!(SmokeProfile::default().validate().is_ok());
-        let profile = SmokeProfileV0 {
+    fn zkrefine_profile_is_fixed_to_no_gas_no_inner_pvm() {
+        assert!(ZkRefineProfile::default().validate().is_ok());
+        let profile = ZkRefineProfileV1 {
             gas_proof: true,
-            ..SmokeProfileV0::default()
+            ..ZkRefineProfileV1::default()
         };
-        assert!(SmokeProfile::V0(profile).validate().is_err());
+        assert!(ZkRefineProfile::V1(profile).validate().is_err());
     }
 
     #[test]
@@ -133,7 +143,7 @@ mod tests {
     fn refine_case_roundtrips_with_fixture_witness() {
         let case = RefineCaseV1 {
             format_version: REFINE_CASE_FORMAT_V1,
-            profile: SmokeProfile::default(),
+            profile: ZkRefineProfile::default(),
             core_index: 2,
             item_index: 0,
             work_package: vec![1, 2, 3],

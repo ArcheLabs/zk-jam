@@ -1,4 +1,4 @@
-//! Static, semantics-preserving Translation for the M3 smoke workloads.
+//! Static, semantics-preserving Translation for bounded workload fixtures.
 //!
 //! This crate deliberately emits a small, program-specific RV32-like operation list.  It does
 //! not contain a runtime PVM interpreter: the OpenVM integration selects a statically compiled
@@ -14,10 +14,6 @@ use zk_jam_refine_interface::{
     RegisterOperandsV1, PVM_PROGRAM_FORMAT_V1,
 };
 
-/// The private Jambda source identity used by the M3 adapter integration.
-/// Values are generated from `integration/jambda-m3.json` at compile time.
-pub const JAMBDA_REPOSITORY: &str = env!("ZK_JAM_JAMBDA_REPOSITORY");
-pub const JAMBDA_REVISION: &str = env!("ZK_JAM_JAMBDA_REVISION");
 pub const TRANSLATION_VERSION: u32 = 1;
 pub const PROGRAM_COMMITMENT_DOMAIN: &[u8] = b"zk-jam/program/v1";
 pub const INPUT_COMMITMENT_DOMAIN: &[u8] = b"zk-jam/input/v1";
@@ -181,6 +177,9 @@ fn emit_guest_instruction(
             };
             format!("                branch = {condition};\n")
         }
+        GenericInstruction::HostCall { .. } => {
+            return Err(TranslationError::UnsupportedOpcode(opcode::ECALLI))
+        }
         GenericInstruction::Jump | GenericInstruction::Fallthrough | GenericInstruction::Halt => String::new(),
         GenericInstruction::Trap(_) => return Err(TranslationError::UnsupportedTerminator),
     };
@@ -191,9 +190,10 @@ pub const PVM_PAGE_SIZE: u32 = 4096;
 pub const PVM_PROTECTED_BYTES: u32 = PVM_PAGE_SIZE;
 pub const M3_MEMORY_BYTES: usize = 16 * 1024;
 
-/// Stable opcode names used by Jambda's `jp-vm-primitives`.
+/// Stable opcode names for the normalized PVM instruction vocabulary.
 pub mod opcode {
     pub const TRAP: u8 = 0;
+    pub const ECALLI: u8 = 10;
     pub const LOAD_IMM_64: u8 = 20;
     pub const STORE_IMM_U32: u8 = 32;
     pub const JUMP: u8 = 40;
@@ -328,6 +328,9 @@ pub enum GenericInstruction {
         left: u8,
         right: u8,
     },
+    HostCall {
+        id: u32,
+    },
     Jump,
     Fallthrough,
     Halt,
@@ -345,6 +348,7 @@ impl GenericInstruction {
             Self::Add64 { .. } | Self::Sub64 { .. } | Self::Mul64 { .. } => 4,
             Self::Load32 { .. } | Self::Store32 { .. } | Self::StoreImm32 { .. } => 2,
             Self::Branch { .. } => 2,
+            Self::HostCall { .. } => 1,
             Self::Jump | Self::Fallthrough | Self::Halt | Self::Trap(_) => 1,
         }
     }
@@ -480,6 +484,10 @@ fn encode_instruction(bytes: &mut Vec<u8>, instruction: &GenericInstruction) {
             left,
             right,
         } => bytes.extend_from_slice(&[12, *opcode, *left, *right]),
+        GenericInstruction::HostCall { id } => {
+            bytes.push(17);
+            bytes.extend_from_slice(&id.to_le_bytes());
+        }
         GenericInstruction::Jump => bytes.push(13),
         GenericInstruction::Fallthrough => bytes.push(14),
         GenericInstruction::Halt => bytes.push(15),
@@ -660,6 +668,7 @@ fn emit_instruction(
             left: regs.ra,
             right: regs.rb,
         }),
+        opcode::ECALLI => output.push(GenericInstruction::HostCall { id: imm_u32()? }),
         opcode::LOAD_U32 => output.push(GenericInstruction::Load32 {
             destination: regs.ra,
             address: imm_u32()?,
@@ -993,7 +1002,7 @@ pub fn execute_reference(
     machine.run(program, output_register)
 }
 
-/// Build the exact three normalized programs used by the M3 smoke.
+/// Build the exact bounded normalized workload programs.
 pub fn workload_program(workload: M3Workload) -> PvmProgramV1 {
     match workload {
         M3Workload::Arithmetic => arithmetic_program(),
@@ -1389,8 +1398,13 @@ mod tests {
         let mut program = arithmetic_program();
         program.blocks[0].instructions[0].opcode = 10;
         program.blocks[0].instructions[0].immediate = 1u32.to_le_bytes().to_vec();
+        let translated = translate(&program).expect("ECALLI is valid bounded IR");
         assert!(matches!(
-            translate(&program),
+            translated.blocks[0].instructions[0],
+            GenericInstruction::HostCall { id: 1 }
+        ));
+        assert!(matches!(
+            emit_openvm_guest(&translated, 7),
             Err(TranslationError::UnsupportedOpcode(10))
         ));
 

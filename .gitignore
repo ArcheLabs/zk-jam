@@ -14,7 +14,6 @@ target
 **/mutants.out*/
 
 .agent/
-.m3-deps/
 benchmarks/results/
 
 # RustRover

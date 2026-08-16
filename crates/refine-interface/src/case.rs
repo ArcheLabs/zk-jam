@@ -7,14 +7,14 @@ use serde::{Deserialize, Serialize};
 pub type SegmentBytes = Vec<u8>;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SmokeProfileV0 {
+pub struct ZkRefineProfileV1 {
     pub version: u16,
     pub jam_semantics: u16,
     pub gas_proof: bool,
     pub inner_pvm: bool,
 }
 
-impl Default for SmokeProfileV0 {
+impl Default for ZkRefineProfileV1 {
     fn default() -> Self {
         Self {
             version: 0,
@@ -26,24 +26,24 @@ impl Default for SmokeProfileV0 {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum SmokeProfile {
-    V0(SmokeProfileV0),
+pub enum ZkRefineProfile {
+    V1(ZkRefineProfileV1),
 }
 
-impl Default for SmokeProfile {
+impl Default for ZkRefineProfile {
     fn default() -> Self {
-        Self::V0(SmokeProfileV0::default())
+        Self::V1(ZkRefineProfileV1::default())
     }
 }
 
-impl SmokeProfile {
+impl ZkRefineProfile {
     pub fn id(&self) -> [u8; 32] {
         crate::commitment::hash_domain(b"zk-jam/profile-v0", &self.encode_canonical())
     }
 
     pub fn validate(&self) -> Result<(), CodecError> {
         match self {
-            Self::V0(profile)
+            Self::V1(profile)
                 if profile.version == 0
                     && profile.jam_semantics == JAM_SEMANTICS_VERSION_0_7_2
                     && !profile.gas_proof
@@ -51,16 +51,16 @@ impl SmokeProfile {
             {
                 Ok(())
             }
-            Self::V0(_) => Err(CodecError::InvalidValue("invalid SmokeProfileV0")),
+            Self::V1(_) => Err(CodecError::InvalidValue("invalid ZkRefineProfileV1")),
         }
     }
 }
 
-impl CanonicalCodec for SmokeProfile {
+impl CanonicalCodec for ZkRefineProfile {
     fn encode_canonical(&self) -> Vec<u8> {
         encode_with(|w| {
             match self {
-                SmokeProfile::V0(profile) => {
+                ZkRefineProfile::V1(profile) => {
                     w.u8(0);
                     w.u16(profile.version);
                     w.u16(profile.jam_semantics);
@@ -75,13 +75,13 @@ impl CanonicalCodec for SmokeProfile {
 
     fn decode_canonical(bytes: &[u8]) -> Result<Self, CodecError> {
         decode_with(bytes, |r| match r.u8()? {
-            0 => Ok(SmokeProfile::V0(SmokeProfileV0 {
+            0 => Ok(ZkRefineProfile::V1(ZkRefineProfileV1 {
                 version: r.u16()?,
                 jam_semantics: r.u16()?,
                 gas_proof: r.u8()? != 0,
                 inner_pvm: r.u8()? != 0,
             })),
-            _ => Err(CodecError::InvalidValue("SmokeProfile tag")),
+            _ => Err(CodecError::InvalidValue("ZkRefineProfile tag")),
         })
     }
 }
@@ -89,7 +89,7 @@ impl CanonicalCodec for SmokeProfile {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RefineCaseV1 {
     pub format_version: u16,
-    pub profile: SmokeProfile,
+    pub profile: ZkRefineProfile,
     pub core_index: u16,
     pub item_index: u16,
     pub work_package: Vec<u8>,
@@ -128,7 +128,7 @@ impl CanonicalCodec for RefineCaseV1 {
         encode_with(|w| {
             w.u16(self.format_version);
             match &self.profile {
-                SmokeProfile::V0(profile) => {
+                ZkRefineProfile::V1(profile) => {
                     w.u8(0);
                     w.u16(profile.version);
                     w.u16(profile.jam_semantics);
@@ -153,13 +153,13 @@ impl CanonicalCodec for RefineCaseV1 {
         decode_with(bytes, |r| {
             let format_version = r.u16()?;
             let profile = match r.u8()? {
-                0 => SmokeProfile::V0(SmokeProfileV0 {
+                0 => ZkRefineProfile::V1(ZkRefineProfileV1 {
                     version: r.u16()?,
                     jam_semantics: r.u16()?,
                     gas_proof: r.u8()? != 0,
                     inner_pvm: r.u8()? != 0,
                 }),
-                _ => return Err(CodecError::InvalidValue("SmokeProfile tag")),
+                _ => return Err(CodecError::InvalidValue("ZkRefineProfile tag")),
             };
             let core_index = r.u16()?;
             let item_index = r.u16()?;
