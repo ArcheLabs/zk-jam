@@ -1,40 +1,46 @@
-import { localReplicationSeconds, sharedGroupIngressMbps, workerQueueSeconds } from "../model/formulas";
-import { SMALL_VALIDATOR } from "../model/constants";
-import { runFluidFlows, type Resource } from "./engine";
+import { activeDataNodes, daShardPerNodeMb, effectiveHomeDownMbps, groupInternalSeconds, workerQueueSeconds } from "../model/formulas";
+import { HOME_NODE } from "../model/constants";
 
-type GroupFetchResult = { externalSeconds: number; replicationSeconds: number; readySeconds: number; mbpsPerNode: number };
-export type GroupDaResult = GroupFetchResult;
-export type GroupBlockResult = GroupFetchResult & { verifySeconds: number; dataSeconds: number };
+export type GroupDaResult = {
+  activeDataNodes: number;
+  shardMb: number;
+  externalFetchSeconds: number;
+  replicationSeconds: number;
+  coordinationSeconds: number;
+  controlTrafficSeconds: number;
+  readySeconds: number;
+  daMbpsPerNode: number;
+};
 
-function simulateGroupFetch(nodes: number, load: number, payloadMb: number): GroupFetchResult {
-  const count = Math.max(1, Math.round(nodes));
-  const nodeLinks: Resource[] = Array.from({ length: count }, (_, index) => ({ id: `wan-${index}`, capacityMbps: SMALL_VALIDATOR.wanDownMbps }));
-  const fabric: Resource = { id: "group-ingress", capacityMbps: 2_000 };
-  const sliceMb = payloadMb / count;
-  const flows = Array.from({ length: count }, (_, index) => ({ id: `slice-${index}`, remainingMB: sliceMb, resources: [nodeLinks[index], fabric] }));
-  const rawExternalSeconds = runFluidFlows(flows).reduce((max, result) => Math.max(max, result.time), 0);
-  const efficiency = 0.85 * Math.max(0.48, 0.95 - 0.31 * load);
-  const externalSeconds = rawExternalSeconds / efficiency;
-  const replicationSeconds = localReplicationSeconds(payloadMb, count);
+export type GroupBlockResult = GroupDaResult & {
+  verifySeconds: number;
+  packagesPerNode: number;
+};
+
+function externalFetch(payloadMb: number, nodes: number, load: number) {
+  const activeNodes = activeDataNodes(nodes, payloadMb);
+  const shardMb = daShardPerNodeMb(payloadMb, nodes);
+  return { activeNodes, shardMb, seconds: 0.05 + shardMb / Math.max(0.001, effectiveHomeDownMbps(load) / 8) };
+}
+
+export function groupDaSimulation(nodes: number, load: number, payloadMb: number, seed = 42): GroupDaResult {
+  const fetch = externalFetch(payloadMb, nodes, load);
+  const internal = groupInternalSeconds(payloadMb, nodes, load, seed);
   return {
-    externalSeconds,
-    replicationSeconds,
-    readySeconds: externalSeconds + replicationSeconds,
-    mbpsPerNode: (sliceMb / Math.max(0.001, externalSeconds)) * 8,
+    activeDataNodes: fetch.activeNodes,
+    shardMb: fetch.shardMb,
+    externalFetchSeconds: fetch.seconds,
+    replicationSeconds: internal.replicationSeconds,
+    coordinationSeconds: internal.coordinationSeconds,
+    controlTrafficSeconds: internal.controlTrafficSeconds,
+    readySeconds: fetch.seconds + internal.totalSeconds,
+    daMbpsPerNode: (fetch.shardMb / Math.max(0.001, fetch.seconds)) * 8,
   };
 }
 
-/** DA path: cooperative shard fetch followed by explicit local replication. All values are seconds. */
-export function groupDaSimulation(nodes: number, load: number, payloadMb: number): GroupDaResult {
-  return simulateGroupFetch(nodes, load, payloadMb);
+export function groupBlockSimulation(nodes: number, load: number, payloadMb: number, verifyTasks: number, seed = 42): GroupBlockResult {
+  const da = groupDaSimulation(nodes, load, payloadMb, seed);
+  const packagesPerNode = Math.ceil(verifyTasks / Math.max(1, Math.min(Math.max(1, Math.round(nodes)), Math.max(1, verifyTasks))));
+  const verifySeconds = workerQueueSeconds(packagesPerNode, HOME_NODE.verifyWorkers, 0.025);
+  return { ...da, verifySeconds, packagesPerNode };
 }
-
-/** Block path: independent block fetch/replication plus a separate verify-worker queue. */
-export function groupBlockSimulation(nodes: number, load: number, payloadMb: number, verifyTasks: number): GroupBlockResult {
-  const fetch = simulateGroupFetch(nodes, load, payloadMb);
-  const verifyWorkers = Math.min(verifyTasks, Math.max(1, Math.round(nodes)) * SMALL_VALIDATOR.verifyWorkersPerNode);
-  const verifySeconds = workerQueueSeconds(verifyTasks, verifyWorkers, 0.025);
-  return { ...fetch, dataSeconds: fetch.readySeconds, verifySeconds };
-}
-
-export const groupIngressForDisplay = (nodes: number, load: number) => sharedGroupIngressMbps(nodes, load);
