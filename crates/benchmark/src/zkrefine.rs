@@ -286,26 +286,31 @@ fn validate_zkrefine_program(program: &PvmProgramV1) -> Result<()> {
         .flat_map(|block| block.instructions.iter())
         .collect::<Vec<_>>();
     let expected = [
-        (20, 7, 0, 0, 8),
-        (20, 8, 0, 0, 8),
-        (20, 9, 0, 0, 8),
-        (20, 10, 0, 0, 8),
-        (20, 11, 0, 0, 8),
-        (20, 12, 0, 0, 8),
+        (20, 0, 7, 0, 8),
+        (20, 0, 8, 0, 8),
+        (20, 0, 9, 0, 8),
+        (20, 0, 10, 0, 8),
+        (20, 0, 11, 0, 8),
+        (20, 0, 12, 0, 8),
         (10, 0, 0, 0, 4),
-        (56, 1, 0, 0, 4),
-        (20, 2, 0, 0, 8),
+        (56, 0, 1, 0, 4),
+        (20, 0, 2, 0, 8),
         (211, 1, 1, 2, 0),
-        (61, 1, 0, 0, 4),
-        (20, 7, 0, 0, 8),
-        (20, 8, 0, 0, 8),
-        (20, 7, 0, 0, 8),
-        (20, 8, 0, 0, 8),
+        (61, 0, 1, 0, 4),
+        (20, 0, 7, 0, 8),
+        (20, 0, 8, 0, 8),
+        (20, 0, 7, 0, 8),
+        (20, 0, 8, 0, 8),
         (10, 0, 0, 0, 4),
         (50, 0, 7, 0, 4),
     ];
     if program.blocks.len() != 1 || instructions.len() != expected.len() {
-        return Err(eyre!("ZkRefine PVM program instruction count mismatch"));
+        return Err(eyre!(
+            "ZkRefine PVM program instruction count mismatch: actual={} expected={} blocks={}",
+            instructions.len(),
+            expected.len(),
+            program.blocks.len()
+        ));
     }
     let mut pc = 0u32;
     for (index, (instruction, &(opcode, rd, ra, rb, immediate_len))) in
@@ -319,7 +324,22 @@ fn validate_zkrefine_program(program: &PvmProgramV1) -> Result<()> {
             || instruction.pc_delta != 0
             || instruction.immediate.len() != immediate_len
         {
-            return Err(eyre!("ZkRefine PVM instruction {index} is not canonical"));
+            return Err(eyre!(
+                "ZkRefine PVM instruction {index} mismatch: actual pc={} opcode={} rd={} ra={} rb={} pc_delta={} immediate_len={}; expected pc={} opcode={} rd={} ra={} rb={} pc_delta=0 immediate_len={}",
+                instruction.pc,
+                instruction.opcode,
+                instruction.registers.rd,
+                instruction.registers.ra,
+                instruction.registers.rb,
+                instruction.pc_delta,
+                instruction.immediate.len(),
+                pc,
+                opcode,
+                rd,
+                ra,
+                rb,
+                immediate_len
+            ));
         }
         pc += match opcode {
             10 => 5,
@@ -329,27 +349,39 @@ fn validate_zkrefine_program(program: &PvmProgramV1) -> Result<()> {
             _ => return Err(eyre!("unsupported ZkRefine opcode {opcode}")),
         };
     }
-    let imm = |index: usize| instructions[index].immediate.as_slice();
-    let u32_at = |index: usize| u32::from_le_bytes(imm(index).try_into().unwrap());
-    let u64_at = |index: usize| u64::from_le_bytes(imm(index).try_into().unwrap());
-    if u64_at(0) != 0x20000
-        || u64_at(1) != 0
-        || u64_at(2) != SEGMENT_BYTES as u64
-        || u64_at(3) != 6
-        || u64_at(4) != 0
-        || u64_at(5) != 0
-        || u32_at(6) != 1
-        || u32_at(7) != 0x20000
-        || u64_at(8) != 0xA5A5_A5A5
-        || u32_at(10) != 0x20000
-        || u64_at(11) != 0x20000
-        || u64_at(12) != SEGMENT_BYTES as u64
-        || u64_at(13) != 0x20000
-        || u64_at(14) != SEGMENT_BYTES as u64
-        || u32_at(15) != 7
-        || u32_at(16) != (-65_537i32) as u32
+    let expected_immediates = [
+        0x20000u64.to_le_bytes().to_vec(),
+        0u64.to_le_bytes().to_vec(),
+        (SEGMENT_BYTES as u64).to_le_bytes().to_vec(),
+        6u64.to_le_bytes().to_vec(),
+        0u64.to_le_bytes().to_vec(),
+        0u64.to_le_bytes().to_vec(),
+        1u32.to_le_bytes().to_vec(),
+        0x20000u32.to_le_bytes().to_vec(),
+        0xA5A5_A5A5u64.to_le_bytes().to_vec(),
+        Vec::new(),
+        0x20000u32.to_le_bytes().to_vec(),
+        0x20000u64.to_le_bytes().to_vec(),
+        (SEGMENT_BYTES as u64).to_le_bytes().to_vec(),
+        0x20000u64.to_le_bytes().to_vec(),
+        (SEGMENT_BYTES as u64).to_le_bytes().to_vec(),
+        7u32.to_le_bytes().to_vec(),
+        (-65_537i32).to_le_bytes().to_vec(),
+    ];
+    for (index, (instruction, expected_immediate)) in instructions
+        .iter()
+        .zip(expected_immediates.iter())
+        .enumerate()
     {
-        return Err(eyre!("ZkRefine PVM fixture immediates do not match"));
+        if instruction.immediate != *expected_immediate {
+            return Err(eyre!(
+                "ZkRefine PVM instruction {index} immediate mismatch: actual_len={} actual={:02x?} expected_len={} expected={:02x?}",
+                instruction.immediate.len(),
+                instruction.immediate,
+                expected_immediate.len(),
+                expected_immediate
+            ));
+        }
     }
     if !matches!(
         program.blocks[0].terminator,
