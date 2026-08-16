@@ -1,4 +1,4 @@
-//! Static, semantics-preserving Translation for the M3 smoke workloads.
+//! Static, semantics-preserving Translation for bounded workload fixtures.
 //!
 //! This crate deliberately emits a small, program-specific RV32-like operation list.  It does
 //! not contain a runtime PVM interpreter: the OpenVM integration selects a statically compiled
@@ -14,10 +14,6 @@ use zk_jam_refine_interface::{
     RegisterOperandsV1, PVM_PROGRAM_FORMAT_V1,
 };
 
-/// The private Jambda source identity used by the M3 adapter integration.
-/// Values are generated from `integration/jambda-m3.json` at compile time.
-pub const JAMBDA_REPOSITORY: &str = env!("ZK_JAM_JAMBDA_REPOSITORY");
-pub const JAMBDA_REVISION: &str = env!("ZK_JAM_JAMBDA_REVISION");
 pub const TRANSLATION_VERSION: u32 = 1;
 pub const PROGRAM_COMMITMENT_DOMAIN: &[u8] = b"zk-jam/program/v1";
 pub const INPUT_COMMITMENT_DOMAIN: &[u8] = b"zk-jam/input/v1";
@@ -194,7 +190,7 @@ pub const PVM_PAGE_SIZE: u32 = 4096;
 pub const PVM_PROTECTED_BYTES: u32 = PVM_PAGE_SIZE;
 pub const M3_MEMORY_BYTES: usize = 16 * 1024;
 
-/// Stable opcode names used by Jambda's `jp-vm-primitives`.
+/// Stable opcode names for the normalized PVM instruction vocabulary.
 pub mod opcode {
     pub const TRAP: u8 = 0;
     pub const ECALLI: u8 = 10;
@@ -1006,7 +1002,7 @@ pub fn execute_reference(
     machine.run(program, output_register)
 }
 
-/// Build the exact three normalized programs used by the M3 smoke.
+/// Build the exact bounded normalized workload programs.
 pub fn workload_program(workload: M3Workload) -> PvmProgramV1 {
     match workload {
         M3Workload::Arithmetic => arithmetic_program(),
@@ -1402,7 +1398,7 @@ mod tests {
         let mut program = arithmetic_program();
         program.blocks[0].instructions[0].opcode = 10;
         program.blocks[0].instructions[0].immediate = 1u32.to_le_bytes().to_vec();
-        let translated = translate(&program).expect("ECALLI is valid M5 IR");
+        let translated = translate(&program).expect("ECALLI is valid bounded IR");
         assert!(matches!(
             translated.blocks[0].instructions[0],
             GenericInstruction::HostCall { id: 1 }

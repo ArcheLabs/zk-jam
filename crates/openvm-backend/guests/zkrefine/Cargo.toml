@@ -1,5 +1,5 @@
 [package]
-name = "zk-jam-openvm-m5-zkrefine-guest"
+name = "zk-jam-openvm-zkrefine-guest"
 version = "2.0.1"
 edition = "2021"
 
@@ -10,5 +10,5 @@ openvm = { version = "2.0.1", git = "https://github.com/openvm-org/openvm.git", 
 sha2 = "0.10"
 
 [[bin]]
-name = "m5-zkrefine-v1"
+name = "zkrefine-v1"
 path = "src/main.rs"

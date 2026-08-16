@@ -9,6 +9,5 @@ authors.workspace = true
 eyre = "0.6"
 serde_json.workspace = true
 zk-jam-benchmark = { path = "../benchmark" }
-zk-jam-cost-model = { path = "../cost-model" }
 zk-jam-openvm-backend = { path = "../openvm-backend" }
 zk-jam-refine-interface = { path = "../refine-interface" }

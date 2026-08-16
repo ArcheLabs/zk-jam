@@ -47,7 +47,7 @@ pub enum M2Benchmark {
     M4NativeArithmetic,
     M4NativeBranch,
     M4NativeMemory16K,
-    M5ZkRefine,
+    ZkRefine,
 }
 
 impl M2Benchmark {
@@ -65,7 +65,7 @@ impl M2Benchmark {
             Self::M4NativeArithmetic => "m4-native-arithmetic",
             Self::M4NativeBranch => "m4-native-branch",
             Self::M4NativeMemory16K => "m4-native-memory-16384",
-            Self::M5ZkRefine => "m5-zkrefine",
+            Self::ZkRefine => "zkrefine",
         }
     }
 
@@ -96,7 +96,7 @@ impl M2Benchmark {
             Self::M4NativeArithmetic => "m4-native-arithmetic-v1",
             Self::M4NativeBranch => "m4-native-branch-v1",
             Self::M4NativeMemory16K => "m4-native-memory-16384-v1",
-            Self::M5ZkRefine => "m5-zkrefine-v1",
+            Self::ZkRefine => "zkrefine-v1",
         }
     }
 }
@@ -387,7 +387,12 @@ impl OpenVmBackend {
 
     pub fn program(&self, benchmark: M2Benchmark) -> Result<OpenVmProgramArtifact> {
         let binary = benchmark.guest_binary();
-        self.program_from_guest_dir(benchmark, &guest_dir(), binary)
+        let directory = if matches!(benchmark, M2Benchmark::ZkRefine) {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("guests/zkrefine")
+        } else {
+            guest_dir()
+        };
+        self.program_from_guest_dir(benchmark, &directory, binary)
     }
 
     /// Build an OpenVM executable from a caller-provided generated guest package. M4 uses this
@@ -524,7 +529,7 @@ impl OpenVmBackend {
         })
     }
 
-    /// Execute a caller-owned serialized witness stream. M5 uses this to keep the complete
+    /// Execute a caller-owned serialized witness stream. ZkRefine uses this to keep the complete
     /// canonical RefineCase private to the guest input rather than reducing it to M2 words.
     pub fn execute_stdin(
         &self,
@@ -778,7 +783,7 @@ fn sdk_for_benchmark(benchmark: &M2Benchmark) -> OpenVmSdk {
             | M2Benchmark::M4NativeArithmetic
             | M2Benchmark::M4NativeBranch
             | M2Benchmark::M4NativeMemory16K
-            | M2Benchmark::M5ZkRefine
+            | M2Benchmark::ZkRefine
     ) {
         let app_params = app_params_with_100_bits_security(MAX_APP_LOG_STACKED_HEIGHT);
         let mut app_config = AppConfig::riscv32(app_params);

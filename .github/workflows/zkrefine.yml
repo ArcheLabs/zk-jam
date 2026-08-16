@@ -1,0 +1,76 @@
+name: ZkRefine
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "crates/**"
+      - "fixtures/refine-import-export-v1/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/zkrefine.yml"
+      - "README.md"
+      - "SECURITY.md"
+      - "docs/zkrefine-profile-v1.md"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  OPENVM_RUST_TOOLCHAIN: nightly-2026-01-18
+
+jobs:
+  zkrefine:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout zk-jam
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install pinned OpenVM guest toolchain
+        run: rustup toolchain install "${OPENVM_RUST_TOOLCHAIN}" --profile minimal --component rust-src
+      - name: Check release sources
+        run: |
+          cargo fmt --all -- --check
+          cargo check --workspace
+          cargo clippy --workspace --all-targets -- -D warnings
+          cargo test --workspace
+          git diff --check
+      - name: Run ZkRefine proof acceptance
+        run: cargo run --release -p zk-jam -- zkrefine --fixture fixtures/refine-import-export-v1 --output artifacts/zkrefine
+      - name: Enforce fail-closed acceptance
+        run: |
+          report=artifacts/zkrefine/zkrefine-report.json
+          test -s "$report"
+          test "$(jq -r '.schema' "$report")" = "zk-jam/zkrefine-report/v1"
+          test "$(jq -r '.verified' "$report")" = true
+          test "$(jq -r '.reference.result_match' "$report")" = true
+          test "$(jq -r '.reference.exports_match' "$report")" = true
+          test "$(jq -r '.proof.verified' "$report")" = true
+          test "$(jq -r '.proof.serialized_reload_verified' "$report")" = true
+          test "$(jq -r '.work_report.package_hash_match' "$report")" = true
+          test "$(jq -r '.work_report.result_match' "$report")" = true
+          test "$(jq -r '.work_report.exports_root_match' "$report")" = true
+          test "$(jq -r '.work_report.exports_count_match' "$report")" = true
+          test "$(jq -r '.tamper.case_rejected' "$report")" = true
+          test "$(jq -r '.tamper.result_rejected' "$report")" = true
+          test "$(jq -r '.tamper.exports_rejected' "$report")" = true
+          test "$(jq -r '.tamper.statement_rejected' "$report")" = true
+      - name: Upload ZkRefine release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: zkrefine-v1-${{ github.sha }}-${{ github.run_id }}
+          if-no-files-found: error
+          path: |
+            fixtures/refine-import-export-v1/case.bin
+            fixtures/refine-import-export-v1/result.bin
+            fixtures/refine-import-export-v1/exports.bin
+            fixtures/refine-import-export-v1/work-report.json
+            artifacts/zkrefine/proof.json
+            artifacts/zkrefine/statement.json
+            artifacts/zkrefine/zkrefine-report.json
+      - name: Publish ZkRefine report
+        run: cat artifacts/zkrefine/zkrefine-report.json >> "$GITHUB_STEP_SUMMARY"

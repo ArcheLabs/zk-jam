@@ -5,12 +5,12 @@ use sha2::{Digest, Sha256};
 
 const SEGMENT_SIZE: usize = 4_104;
 const VM_LOW_PROTECTED: usize = 1 << 16;
-const BUFFER: usize = VM_LOW_PROTECTED;
+const BUFFER: usize = 2 << 16;
 const XOR_MASK: u32 = 0xA5A5_A5A5;
-const PROFILE_DOMAIN: &[u8] = b"zk-jam/m5/profile/v1";
-const CASE_DOMAIN: &[u8] = b"zk-jam/m5/refine-case/v1";
-const RESULT_DOMAIN: &[u8] = b"zk-jam/m5/result/v1";
-const EXPORTS_DOMAIN: &[u8] = b"zk-jam/m5/exports/v1";
+const PROFILE_DOMAIN: &[u8] = b"zk-jam/zkrefine/profile/v1";
+const CASE_DOMAIN: &[u8] = b"zk-jam/zkrefine/case/v1";
+const RESULT_DOMAIN: &[u8] = b"zk-jam/zkrefine/result/v1";
+const EXPORTS_DOMAIN: &[u8] = b"zk-jam/zkrefine/exports/v1";
 
 struct Cursor<'a> {
     bytes: &'a [u8],
@@ -55,7 +55,7 @@ fn hash(domain: &[u8], bytes: &[u8]) -> [u8; 32] {
 }
 
 fn profile_id() -> [u8; 32] {
-    // SmokeProfile::V0(default).encode_canonical(): tag, version, JAM 0.7.2, gas=false,
+    // The fixed ZkRefineProfile v1 default encoding: tag, version, JAM 0.7.2, gas=false,
     // inner_pvm=false. This is a profile description, not a Refine input or output.
     hash(PROFILE_DOMAIN, &[0, 0, 0, 2, 7, 0, 0])
 }
@@ -80,11 +80,11 @@ fn first_import(case: &[u8]) -> Vec<u8> {
     }
 
     let item_count = cursor.count();
-    assert_eq!(item_count, 1, "M5 supports one item");
+    assert_eq!(item_count, 1, "ZkRefine supports one item");
     let mut selected = Vec::new();
     for item in 0..item_count {
         let segment_count = cursor.count();
-        assert_eq!(segment_count, 1, "M5 supports one import");
+    assert_eq!(segment_count, 1, "ZkRefine supports one import");
         for segment in 0..segment_count {
             let value = cursor.bytes();
             if item == 0 && segment == 0 {
@@ -102,10 +102,10 @@ pub fn main() {
     let case = read_vec();
     let case_commitment = hash(CASE_DOMAIN, &case);
     let imported = first_import(&case);
-    assert_eq!(imported.len(), SEGMENT_SIZE, "M5 FETCH mode 6 segment length");
+    assert_eq!(imported.len(), SEGMENT_SIZE, "ZkRefine FETCH mode 6 segment length");
 
     // ECALLI FETCH(1), mode 6: import_segments[item_index][0], copied into protected memory.
-    let mut memory = vec![0u8; SEGMENT_SIZE + 64];
+    let mut memory = vec![0u8; BUFFER - VM_LOW_PROTECTED + SEGMENT_SIZE + 64];
     let buffer = BUFFER - VM_LOW_PROTECTED;
     memory[buffer..buffer + SEGMENT_SIZE].copy_from_slice(&imported);
 
