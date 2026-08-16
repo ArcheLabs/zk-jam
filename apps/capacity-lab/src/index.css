@@ -41,7 +41,7 @@ body { background: #040a11; }
 .parameter input[type=range]::-webkit-slider-thumb { border-color: #e9f8ff; background: var(--brand-blue); box-shadow: 0 0 13px rgba(0,159,232,.42); }
 .map-caption { bottom: 70px; color: #718da5; }
 .map-caption span { color: var(--brand-blue); }
-.map-legend { top: auto; right: auto; bottom: 18px; left: 18px; transform: translateY(-166px); gap: 13px; padding: 9px 12px; border-color: rgba(0,159,232,.28); background: rgba(5,18,29,.82); box-shadow: 0 12px 35px rgba(0,0,0,.22); }
+.map-legend { top: auto; right: auto; bottom: 215px; left: 18px; z-index: 9; gap: 16px; padding: 0; border: 0; background: transparent; box-shadow: none; backdrop-filter: none; }
 .map-legend span { display: inline-flex; align-items: center; color: #b3c7da; }
 .dot { flex: 0 0 auto; margin-right: 5px; }
 .dot-da { background: var(--brand-blue); box-shadow: 0 0 8px rgba(0,159,232,.65); }
@@ -63,7 +63,7 @@ body { background: #040a11; }
 
 /* Layout and readability pass */
 .right-rail { top: 18px; z-index: 6; max-height: calc(100% - 36px); overflow-y: auto; scrollbar-width: thin; scrollbar-color: rgba(0,159,232,.45) transparent; }
-.map-legend { z-index: 8; }
+.map-legend { z-index: 9; }
 .timeline-wrap { z-index: 4; }
 .timeline-step .step-icon { grid-row: 1 / span 2; }
 .eyebrow { font-size: 9px; }
