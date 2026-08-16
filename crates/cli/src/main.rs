@@ -12,6 +12,7 @@ use zk_jam_refine_interface::{
 };
 
 fn usage() {
+    eprintln!("usage: zk-jam [--help]");
     eprintln!("usage: zk-jam inspect <case.bin> [--json]");
     eprintln!("       zk-jam make-minimal <case.bin>");
     eprintln!("       zk-jam zkrefine --fixture fixtures/refine-import-export-v1 [--output artifacts/zkrefine]");
@@ -79,11 +80,18 @@ fn make_minimal(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn zkrefine_command(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    if args.get(1).map(String::as_str) != Some("zkrefine") {
+        return Err("internal CLI error: expected zkrefine subcommand".into());
+    }
     let mut fixture = PathBuf::from("fixtures/refine-import-export-v1");
     let mut output = PathBuf::from("artifacts/zkrefine");
-    let mut index = 1;
+    let mut index = 2;
     while index < args.len() {
         match args[index].as_str() {
+            "--help" | "-h" => {
+                usage();
+                return Ok(());
+            }
             "--fixture" => {
                 fixture = PathBuf::from(args.get(index + 1).ok_or("missing --fixture value")?);
                 index += 2;
@@ -106,6 +114,10 @@ fn zkrefine_command(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
 fn main() -> ExitCode {
     let args = env::args().collect::<Vec<_>>();
     let result = match args.get(1).map(String::as_str) {
+        Some("--help") | Some("-h") => {
+            usage();
+            Ok(())
+        }
         Some("inspect") => inspect(
             Path::new(args.get(2).map(String::as_str).unwrap_or("")),
             args.iter().any(|arg| arg == "--json"),

@@ -172,8 +172,7 @@ pub fn run_zkrefine(fixture: &Path, output: &Path) -> Result<ZkRefineReportV1> {
 
     let backend = OpenVmBackend;
     let program = backend.program(M2Benchmark::ZkRefine)?;
-    let mut stdin = StdIn::default();
-    stdin.write(&case_bytes);
+    let stdin = StdIn::from_bytes(&case_bytes);
     let execution = backend.execute_stdin(&program, stdin.clone())?;
     let statement = ZkRefineStatementV1::decode_openvm(&execution.public_output)
         .map_err(|error| eyre!("decode ZkRefine execution statement: {error}"))?;

@@ -67,7 +67,7 @@ impl std::error::Error for UnsupportedFeature {}
 pub fn check_host_call(id: u32) -> Result<(), UnsupportedFeature> {
     match id {
         0 => Err(UnsupportedFeature::GasHostCall),
-        1 | 6 | 7 => Ok(()),
+        1 | 7 => Ok(()),
         8..=13 => Err(UnsupportedFeature::InnerPvm),
         _ => Err(UnsupportedFeature::UnsupportedHostCall(id)),
     }
@@ -114,6 +114,10 @@ mod tests {
     #[test]
     fn forbidden_host_calls_are_explicit() {
         assert_eq!(check_host_call(0), Err(UnsupportedFeature::GasHostCall));
+        assert_eq!(
+            check_host_call(6),
+            Err(UnsupportedFeature::UnsupportedHostCall(6))
+        );
         assert_eq!(check_host_call(8), Err(UnsupportedFeature::InnerPvm));
         assert_eq!(
             check_host_call(99),
